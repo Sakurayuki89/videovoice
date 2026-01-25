@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(python tests/pipeline_verify.py:*)",
+      "Bash(C:\\\\code\\\\videovoice\\\\venv\\\\Scripts\\\\python.exe:*)",
+      "Bash(./venv/Scripts/python.exe:*)"
+    ]
+  }
+}

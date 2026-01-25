@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test outputs
+tests/*.wav
+tests/output_*.wav
+tests/test_input_*.wav
+
+# Models (large files)
+*.pt
+*.pth
+*.bin
+*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temp
+*.tmp
+*.temp
+
+# External binaries
+tools/ffmpeq/
+tools/ffmpeg/
+*.exe
