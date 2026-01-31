@@ -137,8 +137,15 @@ class Pipeline:
             stt = STTModule()
             source_lang = job.settings.source_lang if job.settings.source_lang != 'auto' else None
             
-            # Run blocking STT call in thread
-            text = await asyncio.to_thread(stt.transcribe, temp_audio, language=source_lang)
+            # Run blocking STT call in thread with timeout
+            from ..config import STT_TIMEOUT
+            try:
+                text = await asyncio.wait_for(
+                    asyncio.to_thread(stt.transcribe, temp_audio, language=source_lang),
+                    timeout=STT_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                raise PipelineStepError("transcribe", f"STT timed out after {STT_TIMEOUT} seconds")
 
             # Handle empty transcription
             if not text or not text.strip():
