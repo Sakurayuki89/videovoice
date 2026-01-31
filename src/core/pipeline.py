@@ -159,23 +159,45 @@ class Pipeline:
 
             self._check_cancelled(job_id, job_manager)
 
-            # Step 3: Translate
+            # Step 3: Translate (with cache)
             current_step = "translate"
             job_manager.update_step(job_id, "translate", "processing")
             sync_mode = getattr(job.settings, 'sync_mode', 'optimize')
-            log(f"Translating to {job.settings.target_lang}... (sync_mode: {sync_mode})")
+            translation_engine = getattr(job.settings, 'translation_engine', 'local')
+            # Convert enum to string if needed
+            if hasattr(translation_engine, 'value'):
+                translation_engine = translation_engine.value
+            log(f"Translating to {job.settings.target_lang}... (sync_mode: {sync_mode}, engine: {translation_engine})")
             translator = Translator()
+
+            # Initialize translation cache
+            from ..config import TRANSLATION_CACHE_ENABLED, CACHE_DIR, CACHE_EXPIRATION_DAYS
+            from .translation_cache import TranslationCache
+            cache = TranslationCache(CACHE_DIR, CACHE_EXPIRATION_DAYS) if TRANSLATION_CACHE_ENABLED else None
+
+            quality_result = None
+            cache_hit = False
 
             # Skip translation if source and target are the same
             if job.settings.source_lang == job.settings.target_lang:
                 log("Source and target languages are the same, skipping translation")
                 translated_text = text
             else:
-                # Run blocking translation call in thread
-                # Pass sync_mode to control translation length
-                translated_text = await asyncio.to_thread(
-                    translator.translate, text, job.settings.source_lang, job.settings.target_lang, sync_mode
-                )
+                # Check cache first
+                cached = cache.get(text, job.settings.source_lang, job.settings.target_lang, sync_mode) if cache else None
+                if cached:
+                    translated_text = cached["translated_text"]
+                    quality_result = cached.get("quality_result")
+                    cache_hit = True
+                    log(f"Cache hit — using cached translation ({len(translated_text)} chars)")
+                    if quality_result:
+                        score = quality_result.get("overall_score", 0)
+                        log(f"Cached Quality Score: {score}%")
+                else:
+                    # Run blocking translation call in thread
+                    translated_text = await asyncio.to_thread(
+                        translator.translate, text, job.settings.source_lang, job.settings.target_lang, sync_mode, translation_engine
+                    )
 
             # Handle empty translation
             if not translated_text or not translated_text.strip():
@@ -188,12 +210,16 @@ class Pipeline:
 
             self._check_cancelled(job_id, job_manager)
 
-            # Step 3.5: Quality Validation (Optional)
-            if job.settings.verify_translation:
+            # Step 3.5: Quality Validation (Optional) + Auto-Refinement
+            if cache_hit and quality_result:
+                # Already have quality result from cache, skip re-evaluation
+                job_manager.set_quality_result(job_id, quality_result)
+                job_manager.update_progress(job_id, 60)
+            elif job.settings.verify_translation:
                 log("Evaluating translation quality (Gemini API)...")
                 try:
                     validator = QualityValidator()
-                    
+
                     # Run blocking validation in thread
                     quality_result = await asyncio.to_thread(
                         validator.evaluate,
@@ -202,17 +228,57 @@ class Pipeline:
                         job.settings.source_lang,
                         job.settings.target_lang
                     )
-                    
-                    job_manager.set_quality_result(job_id, quality_result)
+
                     score = quality_result.get("overall_score", 0)
                     recommendation = quality_result.get("recommendation", "REVIEW_NEEDED")
+                    issues = quality_result.get("issues", [])
                     log(f"Quality Score: {score}% ({recommendation})")
-                    if quality_result.get("issues"):
-                        log(f"Issues: {', '.join(quality_result['issues'][:3])}")
+                    if issues:
+                        log(f"Issues: {', '.join(issues[:3])}")
+
+                    # Auto-refine if score is below threshold and there are actionable issues
+                    if score < 85 and issues and recommendation != "APPROVED":
+                        log(f"Score below 85% — refining translation with feedback...")
+                        refined_text = await asyncio.to_thread(
+                            translator.refine,
+                            text, translated_text,
+                            job.settings.source_lang, job.settings.target_lang,
+                            issues, sync_mode, translation_engine
+                        )
+                        if refined_text and refined_text.strip() and refined_text != translated_text:
+                            translated_text = refined_text
+                            log(f"Refined translation: {len(translated_text)} chars")
+                            log(f"Preview: {translated_text[:100]}...")
+
+                            # Re-evaluate refined translation
+                            quality_result = await asyncio.to_thread(
+                                validator.evaluate,
+                                text,
+                                translated_text,
+                                job.settings.source_lang,
+                                job.settings.target_lang
+                            )
+                            new_score = quality_result.get("overall_score", 0)
+                            log(f"Refined Quality Score: {new_score}% (was {score}%)")
+                        else:
+                            log("Refinement returned same or empty result, keeping original")
+
+                    job_manager.set_quality_result(job_id, quality_result)
+
+                    # Save to cache (final translation + quality result)
+                    if cache and job.settings.source_lang != job.settings.target_lang:
+                        cache.put(text, job.settings.source_lang, job.settings.target_lang,
+                                  sync_mode, translated_text, quality_result)
+                        log("Translation cached to disk")
                 except Exception as e:
                     log(f"Quality validation failed: {e} (continuing anyway)")
                 job_manager.update_progress(job_id, 60)
             else:
+                # No quality validation, still cache the translation
+                if cache and job.settings.source_lang != job.settings.target_lang and not cache_hit:
+                    cache.put(text, job.settings.source_lang, job.settings.target_lang,
+                              sync_mode, translated_text)
+                    log("Translation cached to disk")
                 job_manager.update_progress(job_id, 60)
 
             self._check_cancelled(job_id, job_manager)

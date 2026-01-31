@@ -18,12 +18,18 @@ class SyncMode(str, Enum):
     STRETCH = "stretch"        # Full translation, stretch video to fit longer audio
 
 
+class TranslationEngine(str, Enum):
+    LOCAL = "local"
+    GROQ = "groq"
+
+
 class JobSettings(BaseModel):
     source_lang: str = "auto"
     target_lang: str = "ko"
     clone_voice: bool = True
     verify_translation: bool = False
     sync_mode: SyncMode = SyncMode.OPTIMIZE  # Default to natural translation
+    translation_engine: TranslationEngine = TranslationEngine.LOCAL
 
 class LogEntry(BaseModel):
     timestamp: datetime

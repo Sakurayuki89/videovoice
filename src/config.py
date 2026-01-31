@@ -58,6 +58,10 @@ OLLAMA_HOST = os.environ.get("VIDEOVOICE_OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("VIDEOVOICE_OLLAMA_MODEL", "qwen3:14b")
 OLLAMA_TIMEOUT = int(os.environ.get("VIDEOVOICE_OLLAMA_TIMEOUT", "120"))
 
+# Groq API (for translation)
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+
 # Gemini API (for translation quality validation)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
@@ -68,6 +72,12 @@ TTS_MODEL = os.environ.get("VIDEOVOICE_TTS_MODEL", "tts_models/multilingual/mult
 # FFmpeg Configuration
 FFMPEG_TIMEOUT = int(os.environ.get("VIDEOVOICE_FFMPEG_TIMEOUT", "600"))  # 10 minutes
 STT_TIMEOUT = int(os.environ.get("VIDEOVOICE_STT_TIMEOUT", "300"))  # 5 minutes
+
+# Translation Cache
+CACHE_DIR = STATIC_DIR / "cache" / "translations"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+TRANSLATION_CACHE_ENABLED = os.environ.get("VIDEOVOICE_CACHE_ENABLED", "true").lower() == "true"
+CACHE_EXPIRATION_DAYS = int(os.environ.get("VIDEOVOICE_CACHE_EXPIRATION_DAYS", "30"))
 
 # Device Configuration (auto-detected if not set)
 DEVICE = os.environ.get("VIDEOVOICE_DEVICE", "")  # "cuda", "cpu", or "" for auto

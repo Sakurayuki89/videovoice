@@ -37,7 +37,8 @@ export default function Home() {
         targetLang: 'ko',
         cloneVoice: true,
         verifyTranslation: false,
-        syncMode: 'speed_audio'  // 'optimize' = natural translation, 'stretch' = extend video
+        syncMode: 'speed_audio',  // 'optimize' = natural translation, 'stretch' = extend video
+        translationEngine: 'local'  // 'local' = Ollama, 'groq' = Groq API
     });
 
     // 비디오 미리보기 URL 생성/해제
@@ -205,6 +206,7 @@ export default function Home() {
         formData.append('clone_voice', settings.cloneVoice);
         formData.append('verify_translation', settings.verifyTranslation);
         formData.append('sync_mode', settings.syncMode);
+        formData.append('translation_engine', settings.translationEngine);
 
         try {
             console.log('[VideoVoice] Uploading to server...');
@@ -549,6 +551,69 @@ export default function Home() {
                                     </div>
                                     <ShieldCheck className="w-4 h-4 text-slate-500 group-hover:text-violet-400 transition-colors" />
                                 </label>
+                            </div>
+
+                            {/* Translation Engine Selection */}
+                            <div className="pt-3 border-t border-slate-700">
+                                <label className="block text-sm text-slate-400 mb-2">번역 엔진</label>
+                                <div className="space-y-2">
+                                    <label
+                                        className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                                            settings.translationEngine === 'local'
+                                                ? 'border-cyan-500 bg-cyan-500/10'
+                                                : 'border-slate-700 hover:border-slate-600'
+                                        }`}
+                                    >
+                                        <input
+                                            type="radio"
+                                            name="translationEngine"
+                                            value="local"
+                                            checked={settings.translationEngine === 'local'}
+                                            onChange={(e) => setSettings({ ...settings, translationEngine: e.target.value })}
+                                            disabled={extractionState.isExtracting || isSubmitting}
+                                            className="hidden"
+                                        />
+                                        <div className={`w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
+                                            settings.translationEngine === 'local' ? 'border-cyan-500' : 'border-slate-600'
+                                        }`}>
+                                            {settings.translationEngine === 'local' && (
+                                                <div className="w-2 h-2 rounded-full bg-cyan-500" />
+                                            )}
+                                        </div>
+                                        <div className="flex-1">
+                                            <span className="text-sm text-white">로컬 (Ollama)</span>
+                                            <span className="text-xs text-slate-500 ml-2">무료</span>
+                                        </div>
+                                    </label>
+                                    <label
+                                        className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                                            settings.translationEngine === 'groq'
+                                                ? 'border-emerald-500 bg-emerald-500/10'
+                                                : 'border-slate-700 hover:border-slate-600'
+                                        }`}
+                                    >
+                                        <input
+                                            type="radio"
+                                            name="translationEngine"
+                                            value="groq"
+                                            checked={settings.translationEngine === 'groq'}
+                                            onChange={(e) => setSettings({ ...settings, translationEngine: e.target.value })}
+                                            disabled={extractionState.isExtracting || isSubmitting}
+                                            className="hidden"
+                                        />
+                                        <div className={`w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
+                                            settings.translationEngine === 'groq' ? 'border-emerald-500' : 'border-slate-600'
+                                        }`}>
+                                            {settings.translationEngine === 'groq' && (
+                                                <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                                            )}
+                                        </div>
+                                        <div className="flex-1">
+                                            <span className="text-sm text-white">Groq API</span>
+                                            <span className="text-xs text-emerald-400 ml-2">고품질, 빠름</span>
+                                        </div>
+                                    </label>
+                                </div>
                             </div>
                         </div>
                     </div>

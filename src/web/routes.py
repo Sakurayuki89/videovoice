@@ -7,7 +7,7 @@ import uuid
 import re
 import time
 from collections import defaultdict
-from .models import JobSettings, JobResponse, SyncMode
+from .models import JobSettings, JobResponse, SyncMode, TranslationEngine
 from .manager import job_manager
 from ..core.pipeline import pipeline
 
@@ -125,10 +125,17 @@ async def create_job(
     target_lang: str = Form("ko"),
     clone_voice: bool = Form(True),
     verify_translation: bool = Form(False),
-    sync_mode: str = Form("optimize")
+    sync_mode: str = Form("optimize"),
+    translation_engine: str = Form("local")
 ):
     # Rate limit check
     check_rate_limit(request)
+
+    # Validate translation engine
+    valid_engines = {"local", "groq"}
+    if translation_engine not in valid_engines:
+        raise HTTPException(status_code=400, detail=f"Invalid translation_engine: {translation_engine}. Must be one of: {', '.join(valid_engines)}")
+
     # Validate language codes
     if not validate_language(source_lang):
         raise HTTPException(status_code=400, detail=f"Invalid source language: {source_lang}")
@@ -186,7 +193,8 @@ async def create_job(
         target_lang=target_lang,
         clone_voice=clone_voice,
         verify_translation=verify_translation,
-        sync_mode=SyncMode(sync_mode)
+        sync_mode=SyncMode(sync_mode),
+        translation_engine=TranslationEngine(translation_engine)
     )
     
     # Detect if input is audio or video
