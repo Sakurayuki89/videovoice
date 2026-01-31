@@ -128,7 +128,11 @@ class FFmpegModule:
             return False
 
     def merge_video(self, video_path: str, audio_path: str, output_path: str) -> bool:
-        """Merge original video with new audio."""
+        """Merge original video with new audio, always preserving full video duration.
+
+        If audio is shorter than video, pads audio with silence.
+        If audio is longer than video, trims audio to video duration.
+        """
         # Validate all paths
         if not self._validate_path(video_path, must_exist=True):
             print(f"FFmpeg Merge Failed: Invalid or missing video path: {video_path}")
@@ -146,10 +150,19 @@ class FFmpegModule:
         if not self._ensure_output_dir(output_path):
             return False
 
+        video_duration = self.get_media_duration(video_path)
+        audio_duration = self.get_media_duration(audio_path)
+        print(f"Optimize merge - Video: {video_duration:.2f}s, Audio: {audio_duration:.2f}s")
+
+        # Use audio filter to pad with silence or trim to match video duration
+        # apad pads with silence, and -t limits output to video duration
         cmd = [
             "ffmpeg", "-i", video_path, "-i", audio_path,
-            "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0",
-            "-shortest",
+            "-c:v", "copy",
+            "-af", "apad",
+            "-c:a", "aac",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-t", str(video_duration),
             output_path, "-y"
         ]
 
@@ -167,7 +180,7 @@ class FFmpegModule:
             return False
         except subprocess.CalledProcessError as e:
             stderr_msg = e.stderr.decode('utf-8', errors='replace') if e.stderr else 'Unknown error'
-            print(f"FFmpeg Merge Failed: {stderr_msg[:500]}")  # Limit error message length
+            print(f"FFmpeg Merge Failed: {stderr_msg[:500]}")
             return False
         except FileNotFoundError:
             print("FFmpeg Merge Failed: ffmpeg not found in PATH")
@@ -175,8 +188,9 @@ class FFmpegModule:
 
     def extend_video_to_audio(self, video_path: str, audio_path: str, output_path: str) -> bool:
         """
-        Merge video with audio, stretching video if audio is longer.
-        Uses setpts filter to slow down video to match audio duration.
+        Merge video with audio, stretching video to match audio duration.
+        Always outputs the full original video content (slowed down if needed).
+        If audio is shorter, pads audio with silence to preserve full video.
         """
         # Validate all paths
         if not self._validate_path(video_path, must_exist=True):
@@ -205,22 +219,11 @@ class FFmpegModule:
 
         print(f"Video duration: {video_duration:.2f}s, Audio duration: {audio_duration:.2f}s")
 
-        # If audio is longer, slow down video; otherwise do normal merge
         if audio_duration > video_duration:
-            # Calculate slowdown factor (PTS multiplier)
-            # setpts=PTS*factor slows video by that factor
+            # Slow down video to match audio length (no limit - use exact factor)
             slowdown_factor = audio_duration / video_duration
-
-            # Limit slowdown to prevent extremely slow video (max 2x slower)
-            max_slowdown = 2.0
-            if slowdown_factor > max_slowdown:
-                print(f"Warning: Audio is {slowdown_factor:.2f}x longer than video. Limiting slowdown to {max_slowdown}x")
-                slowdown_factor = max_slowdown
-
             print(f"Applying video slowdown factor: {slowdown_factor:.3f}x")
 
-            # Use setpts filter to slow down video
-            # PTS = Presentation TimeStamp
             video_filter = f"setpts={slowdown_factor}*PTS"
 
             cmd = [
@@ -229,17 +232,19 @@ class FFmpegModule:
                 "-c:v", "libx264", "-preset", "medium", "-crf", "23",
                 "-c:a", "aac", "-b:a", "192k",
                 "-map", "0:v:0", "-map", "1:a:0",
-                "-shortest",
+                "-t", str(audio_duration),
                 output_path, "-y"
             ]
         else:
-            # Audio is shorter or equal - do normal merge
-            print("Audio fits within video duration - performing normal merge")
+            # Audio is shorter - pad audio with silence to match full video
+            print("Audio fits within video duration - padding audio with silence")
             cmd = [
                 "ffmpeg", "-i", video_path, "-i", audio_path,
-                "-c:v", "copy", "-c:a", "aac",
+                "-c:v", "copy",
+                "-af", "apad",
+                "-c:a", "aac",
                 "-map", "0:v:0", "-map", "1:a:0",
-                "-shortest",
+                "-t", str(video_duration),
                 output_path, "-y"
             ]
 
@@ -262,3 +267,100 @@ class FFmpegModule:
         except FileNotFoundError:
             print("FFmpeg Extend Failed: ffmpeg not found in PATH")
             return False
+
+    def speed_audio_to_video(self, video_path: str, audio_path: str, output_path: str) -> bool:
+        """
+        Merge video with audio, adjusting audio speed to match video duration.
+        Video stays at original speed (no re-encoding). Audio is sped up or slowed down.
+        Always outputs the full original video.
+        """
+        if not self._validate_path(video_path, must_exist=True):
+            print(f"FFmpeg SpeedAudio Failed: Invalid or missing video path: {video_path}")
+            return False
+        if not self._validate_path(audio_path, must_exist=True):
+            print(f"FFmpeg SpeedAudio Failed: Invalid or missing audio path: {audio_path}")
+            return False
+        if not self._validate_path(output_path, must_exist=False):
+            print(f"FFmpeg SpeedAudio Failed: Invalid output path: {output_path}")
+            return False
+        if not self._ensure_output_dir(output_path):
+            return False
+
+        video_duration = self.get_media_duration(video_path)
+        audio_duration = self.get_media_duration(audio_path)
+
+        if video_duration <= 0 or audio_duration <= 0:
+            print(f"FFmpeg SpeedAudio Failed: Could not determine durations (video={video_duration}s, audio={audio_duration}s)")
+            return False
+
+        print(f"SpeedAudio - Video: {video_duration:.2f}s, Audio: {audio_duration:.2f}s")
+
+        tempo = audio_duration / video_duration
+
+        if abs(tempo - 1.0) < 0.02:
+            # Nearly identical - just merge normally with silence padding
+            print("Audio duration matches video - performing normal merge")
+            cmd = [
+                "ffmpeg", "-i", video_path, "-i", audio_path,
+                "-c:v", "copy", "-af", "apad", "-c:a", "aac",
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-t", str(video_duration),
+                output_path, "-y"
+            ]
+        else:
+            # atempo filter range is [0.5, 100.0] per instance
+            # Chain multiple atempo filters for extreme values
+            atempo_filters = self._build_atempo_chain(tempo)
+            # After tempo adjustment, pad with silence if still shorter, trim if longer
+            audio_filter = f"{atempo_filters},apad"
+
+            print(f"Applying audio tempo: {tempo:.3f}x ({atempo_filters})")
+
+            cmd = [
+                "ffmpeg", "-i", video_path, "-i", audio_path,
+                "-c:v", "copy",
+                "-af", audio_filter,
+                "-c:a", "aac", "-b:a", "192k",
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-t", str(video_duration),
+                output_path, "-y"
+            ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=self.TIMEOUT_SECONDS
+            )
+            return True
+        except subprocess.TimeoutExpired:
+            print(f"FFmpeg SpeedAudio Failed: Operation timed out after {self.TIMEOUT_SECONDS}s")
+            return False
+        except subprocess.CalledProcessError as e:
+            stderr_msg = e.stderr.decode('utf-8', errors='replace') if e.stderr else 'Unknown error'
+            print(f"FFmpeg SpeedAudio Failed: {stderr_msg[:500]}")
+            return False
+        except FileNotFoundError:
+            print("FFmpeg SpeedAudio Failed: ffmpeg not found in PATH")
+            return False
+
+    def _build_atempo_chain(self, tempo: float) -> str:
+        """Build chained atempo filters for values outside [0.5, 100.0].
+        Each atempo instance handles [0.5, 100.0] range."""
+        filters = []
+        remaining = tempo
+        if remaining < 0.5:
+            while remaining < 0.5:
+                filters.append("atempo=0.5")
+                remaining /= 0.5
+            filters.append(f"atempo={remaining:.6f}")
+        elif remaining > 100.0:
+            while remaining > 100.0:
+                filters.append("atempo=100.0")
+                remaining /= 100.0
+            filters.append(f"atempo={remaining:.6f}")
+        else:
+            filters.append(f"atempo={remaining:.6f}")
+        return ",".join(filters)

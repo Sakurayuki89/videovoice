@@ -136,7 +136,7 @@ async def create_job(
         raise HTTPException(status_code=400, detail=f"Invalid target language: {target_lang}")
 
     # Validate sync_mode
-    valid_sync_modes = {"optimize", "stretch"}
+    valid_sync_modes = {"optimize", "speed_audio", "stretch"}
     if sync_mode not in valid_sync_modes:
         raise HTTPException(status_code=400, detail=f"Invalid sync_mode: {sync_mode}. Must be one of: {', '.join(valid_sync_modes)}")
 

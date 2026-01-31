@@ -13,8 +13,9 @@ class JobStatus(str, Enum):
 
 class SyncMode(str, Enum):
     """Dubbing sync mode for handling audio/video length mismatch."""
-    OPTIMIZE = "optimize"  # Translate concisely to fit original duration
-    STRETCH = "stretch"    # Stretch video to fit longer audio
+    OPTIMIZE = "optimize"      # Translate concisely to fit original duration
+    SPEED_AUDIO = "speed_audio"  # Full translation, adjust audio speed to fit video
+    STRETCH = "stretch"        # Full translation, stretch video to fit longer audio
 
 
 class JobSettings(BaseModel):

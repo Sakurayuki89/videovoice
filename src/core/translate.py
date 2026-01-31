@@ -91,7 +91,6 @@ class Translator:
 
         # Build prompt based on sync mode
         if sync_mode == "optimize":
-            # Concise translation mode - prioritize brevity to match original duration
             dubbing_constraint = """
 Dubbing Constraint: Translate concisely to match the original speech duration.
 - Prioritize brevity over literal accuracy
@@ -100,7 +99,7 @@ Dubbing Constraint: Translate concisely to match the original speech duration.
 - Keep the core meaning while reducing word count
 - The translated text should take approximately the same time to speak as the original"""
         else:
-            # Stretch mode - full translation without length constraints
+            # speed_audio and stretch both use full translation
             dubbing_constraint = """
 Translation Requirement: Provide a complete and accurate translation.
 - Preserve all information from the original text

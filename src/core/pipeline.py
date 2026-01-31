@@ -255,13 +255,16 @@ class Pipeline:
 
                 if sync_mode == "stretch":
                     log("Merging audio and video (stretch mode - extending video if needed)...")
-                    # Use extend_video_to_audio which stretches video to match audio length
                     success = await asyncio.to_thread(
                         self.ffmpeg.extend_video_to_audio, input_path, output_wav, output_video
                     )
+                elif sync_mode == "speed_audio":
+                    log("Merging audio and video (speed_audio mode - adjusting audio speed)...")
+                    success = await asyncio.to_thread(
+                        self.ffmpeg.speed_audio_to_video, input_path, output_wav, output_video
+                    )
                 else:
                     log("Merging audio and video (optimize mode - standard merge)...")
-                    # Standard merge - audio is expected to fit within video duration
                     success = await asyncio.to_thread(
                         self.ffmpeg.merge_video, input_path, output_wav, output_video
                     )

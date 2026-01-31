@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Languages, Mic2, ShieldCheck, ArrowRight, Loader2, AlertCircle, Music, CheckCircle2, Film, Clock } from 'lucide-react';
+import { Upload, Languages, Mic2, ShieldCheck, ArrowRight, Loader2, AlertCircle, Music, CheckCircle2, Film, Clock, Gauge } from 'lucide-react';
 import { createJob } from '../services/api';
 import {
     MAX_FILE_SIZE,
@@ -37,7 +37,7 @@ export default function Home() {
         targetLang: 'ko',
         cloneVoice: true,
         verifyTranslation: false,
-        syncMode: 'optimize'  // 'optimize' = natural translation, 'stretch' = extend video
+        syncMode: 'speed_audio'  // 'optimize' = natural translation, 'stretch' = extend video
     });
 
     // 비디오 미리보기 URL 생성/해제
@@ -372,6 +372,7 @@ export default function Home() {
                             <div className="pt-3 border-t border-slate-700">
                                 <label className="block text-sm text-slate-400 mb-3">싱크 모드</label>
                                 <div className="space-y-2">
+                                    {/* Optimize */}
                                     <label
                                         className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
                                             settings.syncMode === 'optimize'
@@ -388,7 +389,7 @@ export default function Home() {
                                             disabled={extractionState.isExtracting || isSubmitting}
                                             className="hidden"
                                         />
-                                        <div className={`w-4 h-4 mt-0.5 rounded-full border-2 flex items-center justify-center ${
+                                        <div className={`w-4 h-4 mt-0.5 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
                                             settings.syncMode === 'optimize' ? 'border-cyan-500' : 'border-slate-600'
                                         }`}>
                                             {settings.syncMode === 'optimize' && (
@@ -398,18 +399,73 @@ export default function Home() {
                                         <div className="flex-1">
                                             <div className="flex items-center gap-2">
                                                 <Film className="w-4 h-4 text-cyan-400" />
-                                                <span className="text-sm font-medium text-white">자연스럽게</span>
-                                                <span className="text-[10px] px-1.5 py-0.5 bg-cyan-500/20 text-cyan-400 rounded">추천</span>
+                                                <span className="text-sm font-medium text-white">간결 번역</span>
                                             </div>
                                             <p className="text-xs text-slate-500 mt-1">
-                                                번역을 간결하게 줄여서 영상 길이에 맞춤
+                                                번역을 간결하게 줄여 원본 영상 속도 유지
                                             </p>
-                                            <p className="text-[10px] text-slate-600 mt-0.5">
-                                                영화, 브이로그, 드라마, 숏폼
-                                            </p>
+                                            <div className="mt-1.5 space-y-0.5">
+                                                <p className="text-[10px] text-slate-600">
+                                                    <span className="text-slate-500">적합:</span> 영화, 드라마, 브이로그, 숏폼
+                                                </p>
+                                                <p className="text-[10px] text-slate-600">
+                                                    <span className="text-slate-500">언어:</span> 한/영/러 → 일본어 (음절 수 많은 언어로 변환 시)
+                                                </p>
+                                                <p className="text-[10px] text-slate-600">
+                                                    <span className="text-slate-500">특징:</span> 영상 원속도 | 의역 번역 | 빠른 처리
+                                                </p>
+                                            </div>
                                         </div>
                                     </label>
 
+                                    {/* Speed Audio */}
+                                    <label
+                                        className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                                            settings.syncMode === 'speed_audio'
+                                                ? 'border-emerald-500 bg-emerald-500/10'
+                                                : 'border-slate-700 hover:border-slate-600'
+                                        }`}
+                                    >
+                                        <input
+                                            type="radio"
+                                            name="syncMode"
+                                            value="speed_audio"
+                                            checked={settings.syncMode === 'speed_audio'}
+                                            onChange={(e) => setSettings({ ...settings, syncMode: e.target.value })}
+                                            disabled={extractionState.isExtracting || isSubmitting}
+                                            className="hidden"
+                                        />
+                                        <div className={`w-4 h-4 mt-0.5 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
+                                            settings.syncMode === 'speed_audio' ? 'border-emerald-500' : 'border-slate-600'
+                                        }`}>
+                                            {settings.syncMode === 'speed_audio' && (
+                                                <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                                            )}
+                                        </div>
+                                        <div className="flex-1">
+                                            <div className="flex items-center gap-2">
+                                                <Gauge className="w-4 h-4 text-emerald-400" />
+                                                <span className="text-sm font-medium text-white">음성 속도 조절</span>
+                                                <span className="text-[10px] px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 rounded">추천</span>
+                                            </div>
+                                            <p className="text-xs text-slate-500 mt-1">
+                                                전체 번역 후 음성 빠르기를 영상에 맞춤
+                                            </p>
+                                            <div className="mt-1.5 space-y-0.5">
+                                                <p className="text-[10px] text-slate-600">
+                                                    <span className="text-slate-500">적합:</span> 모든 영상 (범용)
+                                                </p>
+                                                <p className="text-[10px] text-slate-600">
+                                                    <span className="text-slate-500">언어:</span> 모든 언어 조합 (한/영/러/일 상호 변환)
+                                                </p>
+                                                <p className="text-[10px] text-slate-600">
+                                                    <span className="text-slate-500">특징:</span> 영상 원속도 | 완전한 번역 | 빠른 처리
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </label>
+
+                                    {/* Stretch */}
                                     <label
                                         className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
                                             settings.syncMode === 'stretch'
@@ -426,7 +482,7 @@ export default function Home() {
                                             disabled={extractionState.isExtracting || isSubmitting}
                                             className="hidden"
                                         />
-                                        <div className={`w-4 h-4 mt-0.5 rounded-full border-2 flex items-center justify-center ${
+                                        <div className={`w-4 h-4 mt-0.5 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
                                             settings.syncMode === 'stretch' ? 'border-violet-500' : 'border-slate-600'
                                         }`}>
                                             {settings.syncMode === 'stretch' && (
@@ -436,14 +492,22 @@ export default function Home() {
                                         <div className="flex-1">
                                             <div className="flex items-center gap-2">
                                                 <Clock className="w-4 h-4 text-violet-400" />
-                                                <span className="text-sm font-medium text-white">내용 전체 전달</span>
+                                                <span className="text-sm font-medium text-white">영상 속도 조절</span>
                                             </div>
                                             <p className="text-xs text-slate-500 mt-1">
-                                                말이 길어지면 영상을 느리게 재생
+                                                전체 번역 후 영상을 느리게 재생하여 맞춤
                                             </p>
-                                            <p className="text-[10px] text-slate-600 mt-0.5">
-                                                강의, 튜토리얼, 뉴스, 프레젠테이션
-                                            </p>
+                                            <div className="mt-1.5 space-y-0.5">
+                                                <p className="text-[10px] text-slate-600">
+                                                    <span className="text-slate-500">적합:</span> 강의, 튜토리얼, 뉴스, 프레젠테이션
+                                                </p>
+                                                <p className="text-[10px] text-slate-600">
+                                                    <span className="text-slate-500">언어:</span> 일본어 → 한/영/러 (짧아지는 변환 시)
+                                                </p>
+                                                <p className="text-[10px] text-slate-600">
+                                                    <span className="text-slate-500">특징:</span> 영상 재인코딩 | 완전한 번역 | 느린 처리
+                                                </p>
+                                            </div>
                                         </div>
                                     </label>
                                 </div>
