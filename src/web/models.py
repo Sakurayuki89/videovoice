@@ -23,13 +23,30 @@ class TranslationEngine(str, Enum):
     GROQ = "groq"
 
 
+class STTEngine(str, Enum):
+    LOCAL = "local"
+    GROQ = "groq"
+    OPENAI = "openai"
+
+
+class TTSEngine(str, Enum):
+    AUTO = "auto"
+    XTTS = "xtts"
+    EDGE = "edge"
+    SILERO = "silero"
+    ELEVENLABS = "elevenlabs"
+    OPENAI = "openai"
+
+
 class JobSettings(BaseModel):
     source_lang: str = "auto"
     target_lang: str = "ko"
     clone_voice: bool = True
     verify_translation: bool = False
-    sync_mode: SyncMode = SyncMode.OPTIMIZE  # Default to natural translation
+    sync_mode: SyncMode = SyncMode.OPTIMIZE
     translation_engine: TranslationEngine = TranslationEngine.LOCAL
+    stt_engine: STTEngine = STTEngine.LOCAL
+    tts_engine: TTSEngine = TTSEngine.AUTO
 
 class LogEntry(BaseModel):
     timestamp: datetime

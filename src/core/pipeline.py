@@ -5,7 +5,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from .stt import STTModule
 from .translate import Translator
-from .tts import XTTSModule
+from .tts import TTSModule
 from .ffmpeg import FFmpegModule
 from .quality import QualityValidator
 
@@ -133,8 +133,11 @@ class Pipeline:
             # Step 2: Transcribe
             current_step = "transcribe"
             job_manager.update_step(job_id, "transcribe", "processing")
-            log("Transcribing audio (WhisperX)...")
-            stt = STTModule()
+            stt_engine = getattr(job.settings, 'stt_engine', 'local')
+            if hasattr(stt_engine, 'value'):
+                stt_engine = stt_engine.value
+            log(f"Transcribing audio (engine: {stt_engine})...")
+            stt = STTModule(engine=stt_engine)
             source_lang = job.settings.source_lang if job.settings.source_lang != 'auto' else None
             
             # Run blocking STT call in thread with timeout
@@ -286,16 +289,37 @@ class Pipeline:
             # Step 4: TTS
             current_step = "tts"
             job_manager.update_step(job_id, "tts", "processing")
-            log("Generating Speech (XTTS)...")
-            tts = XTTSModule()
+
+            # Resolve TTS engine
+            tts_engine = getattr(job.settings, 'tts_engine', 'auto')
+            clone_voice = getattr(job.settings, 'clone_voice', True)
+            if hasattr(tts_engine, 'value'):
+                tts_engine = tts_engine.value
+
+            if tts_engine == "auto":
+                if clone_voice:
+                    tts_engine = "xtts"
+                else:
+                    from ..config import TTS_AUTO_SELECT
+                    tts_engine = TTS_AUTO_SELECT.get(job.settings.target_lang, "edge")
+
+            log(f"Generating Speech ({tts_engine.upper()}, clone_voice={clone_voice})...")
+            tts = TTSModule(engine=tts_engine)
 
             # Use extracted audio as speaker reference for voice cloning
-            speaker_ref = temp_audio  # Always use original audio as reference
+            speaker_ref = temp_audio
 
-            # Run blocking TTS call in thread
-            await asyncio.to_thread(
-                tts.generate, translated_text, speaker_ref, output_wav, language=job.settings.target_lang
-            )
+            # Edge TTS is natively async; others run in thread
+            if tts_engine == "edge":
+                await tts.generate_async(
+                    translated_text, speaker_ref, output_wav,
+                    language=job.settings.target_lang
+                )
+            else:
+                await asyncio.to_thread(
+                    tts.generate, translated_text, speaker_ref, output_wav,
+                    language=job.settings.target_lang
+                )
 
             # Verify TTS output
             if not os.path.exists(output_wav) or os.path.getsize(output_wav) == 0:

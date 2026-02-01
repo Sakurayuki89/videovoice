@@ -58,16 +58,51 @@ OLLAMA_HOST = os.environ.get("VIDEOVOICE_OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("VIDEOVOICE_OLLAMA_MODEL", "qwen3:14b")
 OLLAMA_TIMEOUT = int(os.environ.get("VIDEOVOICE_OLLAMA_TIMEOUT", "120"))
 
-# Groq API (for translation)
+# Groq API (for translation and STT)
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
+# OpenAI API (for STT and TTS)
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+# ElevenLabs API (for TTS)
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2")
+
+# STT Engine
+STT_ENGINE = os.environ.get("VIDEOVOICE_STT_ENGINE", "local")  # local, groq, openai
+
 # Gemini API (for translation quality validation)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 TTS_MODEL = os.environ.get("VIDEOVOICE_TTS_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2")
+TTS_ENGINE = os.environ.get("VIDEOVOICE_TTS_ENGINE", "auto")  # auto, xtts, edge, silero
+
+# Edge TTS Voice Map (Microsoft Neural voices)
+EDGE_TTS_VOICES = {
+    "ko": os.environ.get("EDGE_TTS_VOICE_KO", "ko-KR-SunHiNeural"),
+    "ru": os.environ.get("EDGE_TTS_VOICE_RU", "ru-RU-SvetlanaNeural"),
+    "en": os.environ.get("EDGE_TTS_VOICE_EN", "en-US-AriaNeural"),
+    "ja": os.environ.get("EDGE_TTS_VOICE_JA", "ja-JP-NanamiNeural"),
+    "zh": os.environ.get("EDGE_TTS_VOICE_ZH", "zh-CN-XiaoxiaoNeural"),
+    "es": os.environ.get("EDGE_TTS_VOICE_ES", "es-ES-ElviraNeural"),
+    "fr": os.environ.get("EDGE_TTS_VOICE_FR", "fr-FR-DeniseNeural"),
+    "de": os.environ.get("EDGE_TTS_VOICE_DE", "de-DE-KatjaNeural"),
+}
+
+# TTS auto-select map: language -> best engine when clone_voice is OFF
+TTS_AUTO_SELECT = {
+    "ko": "edge",
+    "ru": "edge",
+    "en": "xtts",
+    "ja": "xtts",
+    "zh": "edge",
+    "es": "edge",
+    "fr": "edge",
+    "de": "edge",
+}
 
 # FFmpeg Configuration
 FFMPEG_TIMEOUT = int(os.environ.get("VIDEOVOICE_FFMPEG_TIMEOUT", "600"))  # 10 minutes

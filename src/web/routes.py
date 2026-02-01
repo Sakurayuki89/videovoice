@@ -7,7 +7,7 @@ import uuid
 import re
 import time
 from collections import defaultdict
-from .models import JobSettings, JobResponse, SyncMode, TranslationEngine
+from .models import JobSettings, JobResponse, SyncMode, TranslationEngine, TTSEngine, STTEngine
 from .manager import job_manager
 from ..core.pipeline import pipeline
 
@@ -126,15 +126,27 @@ async def create_job(
     clone_voice: bool = Form(True),
     verify_translation: bool = Form(False),
     sync_mode: str = Form("optimize"),
-    translation_engine: str = Form("local")
+    translation_engine: str = Form("local"),
+    tts_engine: str = Form("auto"),
+    stt_engine: str = Form("local")
 ):
     # Rate limit check
     check_rate_limit(request)
+
+    # Validate STT engine
+    valid_stt_engines = {"local", "groq", "openai"}
+    if stt_engine not in valid_stt_engines:
+        raise HTTPException(status_code=400, detail=f"Invalid stt_engine: {stt_engine}. Must be one of: {', '.join(valid_stt_engines)}")
 
     # Validate translation engine
     valid_engines = {"local", "groq"}
     if translation_engine not in valid_engines:
         raise HTTPException(status_code=400, detail=f"Invalid translation_engine: {translation_engine}. Must be one of: {', '.join(valid_engines)}")
+
+    # Validate TTS engine
+    valid_tts_engines = {"auto", "xtts", "edge", "silero", "elevenlabs", "openai"}
+    if tts_engine not in valid_tts_engines:
+        raise HTTPException(status_code=400, detail=f"Invalid tts_engine: {tts_engine}. Must be one of: {', '.join(valid_tts_engines)}")
 
     # Validate language codes
     if not validate_language(source_lang):
@@ -194,7 +206,9 @@ async def create_job(
         clone_voice=clone_voice,
         verify_translation=verify_translation,
         sync_mode=SyncMode(sync_mode),
-        translation_engine=TranslationEngine(translation_engine)
+        translation_engine=TranslationEngine(translation_engine),
+        tts_engine=TTSEngine(tts_engine),
+        stt_engine=STTEngine(stt_engine)
     )
     
     # Detect if input is audio or video
