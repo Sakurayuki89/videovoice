@@ -9,6 +9,33 @@ from .tts import TTSModule
 from .ffmpeg import FFmpegModule
 from .quality import QualityValidator
 
+def _check_key_term_preservation(original: str, refined: str) -> list[str]:
+    """Check if key terms (numbers, proper nouns, technical terms) survived refinement.
+    Returns list of lost terms. Empty list = OK."""
+    import re as _re
+    lost = []
+
+    # Extract numbers and percentages
+    orig_numbers = set(_re.findall(r'\d+[\.,]?\d*%?', original))
+    refined_numbers = set(_re.findall(r'\d+[\.,]?\d*%?', refined))
+    for n in orig_numbers:
+        if n not in refined_numbers:
+            lost.append(f"number:{n}")
+
+    # Extract capitalized words (proper nouns, abbreviations) — 2+ chars
+    orig_caps = set(_re.findall(r'\b[A-Z][A-Za-z]{1,}\b', original))
+    refined_caps = set(_re.findall(r'\b[A-Z][A-Za-z]{1,}\b', refined))
+    for term in orig_caps:
+        if term not in refined_caps:
+            lost.append(f"term:{term}")
+
+    # If more than 30% of key terms are lost, flag it
+    total = len(orig_numbers) + len(orig_caps)
+    if total > 0 and len(lost) / total > 0.3:
+        return lost
+    return []
+
+
 # Allowed directories for input/output files
 UPLOAD_DIR = os.path.abspath("static/uploads")
 OUTPUT_DIR = os.path.abspath("static/outputs")
@@ -191,16 +218,27 @@ class Pipeline:
                 translated_text = text
             else:
                 # Check cache first
+                CACHE_MIN_QUALITY = 60  # Discard cached translations below this score
                 cached = cache.get(text, job.settings.source_lang, job.settings.target_lang, sync_mode) if cache else None
                 if cached:
-                    translated_text = cached["translated_text"]
-                    quality_result = cached.get("quality_result")
-                    cache_hit = True
-                    log(f"Cache hit — using cached translation ({len(translated_text)} chars)")
-                    if quality_result:
-                        score = quality_result.get("overall_score", 0)
-                        log(f"Cached Quality Score: {score}%")
-                else:
+                    cached_quality = cached.get("quality_result")
+                    cached_score = cached_quality.get("overall_score", 0) if cached_quality else None
+
+                    if cached_score is not None and cached_score < CACHE_MIN_QUALITY:
+                        # Low quality cache — discard and re-translate
+                        log(f"Cache hit but quality too low ({cached_score}%) — re-translating")
+                        if cache:
+                            cache.invalidate(text, job.settings.source_lang, job.settings.target_lang, sync_mode)
+                        cached = None
+                    else:
+                        translated_text = cached["translated_text"]
+                        quality_result = cached_quality
+                        cache_hit = True
+                        log(f"Cache hit — using cached translation ({len(translated_text)} chars)")
+                        if cached_quality:
+                            log(f"Cached Quality Score: {cached_score}%")
+
+                if not cached and not (job.settings.source_lang == job.settings.target_lang):
                     # Run blocking translation call in thread
                     translated_text = await asyncio.to_thread(
                         translator.translate, text, job.settings.source_lang, job.settings.target_lang, sync_mode, translation_engine
@@ -217,66 +255,108 @@ class Pipeline:
 
             self._check_cancelled(job_id, job_manager)
 
-            # Step 3.5: Quality Validation (Optional) + Auto-Refinement
+            # Step 3.5: Quality Validation (Optional) + Auto-Refinement with Quality Gate
+            MIN_QUALITY_SCORE = 85  # Minimum score to proceed
+            MAX_QUALITY_RETRIES = 3  # Max translate→evaluate→refine cycles
+
             if cache_hit and quality_result:
-                # Already have quality result from cache, skip re-evaluation
-                job_manager.set_quality_result(job_id, quality_result)
-                job_manager.update_progress(job_id, 60)
-            elif job.settings.verify_translation:
+                score = quality_result.get("overall_score", 0)
+                if score >= MIN_QUALITY_SCORE:
+                    job_manager.set_quality_result(job_id, quality_result)
+                    job_manager.update_progress(job_id, 60)
+                    log(f"Cache hit with acceptable quality ({score}%)")
+                else:
+                    log(f"Cache hit but quality too low ({score}%) — will re-validate")
+                    cache_hit = False
+                    quality_result = None
+
+            if not cache_hit and job.settings.verify_translation:
                 log("Evaluating translation quality (Gemini API)...")
                 try:
                     validator = QualityValidator()
+                    best_text = translated_text
+                    best_score = 0
+                    best_quality = None
 
-                    # Run blocking validation in thread
-                    quality_result = await asyncio.to_thread(
-                        validator.evaluate,
-                        text,
-                        translated_text,
-                        job.settings.source_lang,
-                        job.settings.target_lang
-                    )
+                    for qi in range(MAX_QUALITY_RETRIES):
+                        self._check_cancelled(job_id, job_manager)
 
-                    score = quality_result.get("overall_score", 0)
-                    recommendation = quality_result.get("recommendation", "REVIEW_NEEDED")
-                    issues = quality_result.get("issues", [])
-                    log(f"Quality Score: {score}% ({recommendation})")
-                    if issues:
-                        log(f"Issues: {', '.join(issues[:3])}")
-
-                    # Auto-refine if score is below threshold and there are actionable issues
-                    if score < 85 and issues and recommendation != "APPROVED":
-                        log(f"Score below 85% — refining translation with feedback...")
-                        refined_text = await asyncio.to_thread(
-                            translator.refine,
-                            text, translated_text,
-                            job.settings.source_lang, job.settings.target_lang,
-                            issues, sync_mode, translation_engine
+                        # Evaluate current translation
+                        quality_result = await asyncio.to_thread(
+                            validator.evaluate,
+                            text, best_text,
+                            job.settings.source_lang, job.settings.target_lang
                         )
-                        if refined_text and refined_text.strip() and refined_text != translated_text:
-                            translated_text = refined_text
-                            log(f"Refined translation: {len(translated_text)} chars")
-                            log(f"Preview: {translated_text[:100]}...")
 
-                            # Re-evaluate refined translation
-                            quality_result = await asyncio.to_thread(
-                                validator.evaluate,
-                                text,
-                                translated_text,
-                                job.settings.source_lang,
-                                job.settings.target_lang
+                        score = quality_result.get("overall_score", 0)
+                        recommendation = quality_result.get("recommendation", "REVIEW_NEEDED")
+                        issues = quality_result.get("issues", [])
+                        log(f"Quality round {qi+1}/{MAX_QUALITY_RETRIES}: {score}% ({recommendation})")
+
+                        # Track best result
+                        if score > best_score:
+                            best_score = score
+                            best_quality = quality_result
+                            best_text_at_best = best_text
+
+                        # Good enough — stop
+                        if score >= MIN_QUALITY_SCORE:
+                            log(f"Quality target reached ({score}% >= {MIN_QUALITY_SCORE}%)")
+                            break
+
+                        # Last retry — don't refine, just use best
+                        if qi == MAX_QUALITY_RETRIES - 1:
+                            log(f"Max retries reached. Using best result ({best_score}%)")
+                            break
+
+                        # Refine translation
+                        if issues:
+                            log(f"Score {score}% < {MIN_QUALITY_SCORE}% — refining (round {qi+2})...")
+                            refined_text = await asyncio.to_thread(
+                                translator.refine,
+                                text, best_text,
+                                job.settings.source_lang, job.settings.target_lang,
+                                issues, sync_mode, translation_engine
                             )
-                            new_score = quality_result.get("overall_score", 0)
-                            log(f"Refined Quality Score: {new_score}% (was {score}%)")
-                        else:
-                            log("Refinement returned same or empty result, keeping original")
+                            if refined_text and refined_text.strip() and refined_text != best_text:
+                                # Check refinement didn't truncate (shorter by >50% is suspicious)
+                                if len(refined_text) < len(best_text) * 0.5:
+                                    log(f"Refinement too short ({len(refined_text)} vs {len(best_text)} chars) — keeping previous")
+                                else:
+                                    # Check key term preservation
+                                    lost = _check_key_term_preservation(best_text, refined_text)
+                                    if lost:
+                                        log(f"Refinement lost key terms: {', '.join(lost[:5])} — keeping previous")
+                                    else:
+                                        best_text = refined_text
+                                        log(f"Refined: {len(best_text)} chars")
+                            else:
+                                # Refinement failed — try full re-translation
+                                log("Refinement returned same/empty — re-translating from scratch")
+                                retranslated = await asyncio.to_thread(
+                                    translator.translate, text,
+                                    job.settings.source_lang, job.settings.target_lang,
+                                    sync_mode, translation_engine
+                                )
+                                if retranslated and retranslated.strip():
+                                    best_text = retranslated
+                                    log(f"Re-translated: {len(best_text)} chars")
+
+                    # Use the best result across all rounds
+                    if best_score > score:
+                        translated_text = best_text_at_best
+                        quality_result = best_quality
+                        log(f"Using best result from earlier round ({best_score}%)")
+                    else:
+                        translated_text = best_text
 
                     job_manager.set_quality_result(job_id, quality_result)
 
-                    # Save to cache (final translation + quality result)
+                    # Only cache if quality is acceptable
                     if cache and job.settings.source_lang != job.settings.target_lang:
                         cache.put(text, job.settings.source_lang, job.settings.target_lang,
                                   sync_mode, translated_text, quality_result)
-                        log("Translation cached to disk")
+                        log(f"Translation cached (score: {quality_result.get('overall_score', 0)}%)")
                 except Exception as e:
                     log(f"Quality validation failed: {e} (continuing anyway)")
                 job_manager.update_progress(job_id, 60)

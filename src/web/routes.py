@@ -32,7 +32,7 @@ ALLOWED_LANGUAGES = {
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 # In production, load from environment variable or secrets manager
 API_KEYS = set(os.environ.get("VIDEOVOICE_API_KEYS", "dev-key-change-in-production").split(","))
-AUTH_ENABLED = os.environ.get("VIDEOVOICE_AUTH_ENABLED", "false").lower() == "true"
+AUTH_ENABLED = os.environ.get("VIDEOVOICE_AUTH_ENABLED", "false").lower() == "true"  # loaded from .env
 
 # Rate limiting (simple in-memory implementation)
 RATE_LIMIT_REQUESTS = 1000  # requests per window
@@ -132,7 +132,7 @@ async def create_job(
     clone_voice: bool = Form(True),
     verify_translation: bool = Form(False),
     sync_mode: str = Form("optimize"),
-    translation_engine: str = Form("groq"),  # Match frontend default
+    translation_engine: str = Form("gemini"),  # Match frontend default
     tts_engine: str = Form("auto"),
     stt_engine: str = Form(STT_ENGINE)  # Use config default here
 ):
@@ -145,7 +145,7 @@ async def create_job(
         raise HTTPException(status_code=400, detail=f"Invalid stt_engine: {stt_engine}. Must be one of: {', '.join(valid_stt_engines)}")
 
     # Validate translation engine
-    valid_engines = {"local", "groq"}
+    valid_engines = {"local", "groq", "gemini"}
     if translation_engine not in valid_engines:
         raise HTTPException(status_code=400, detail=f"Invalid translation_engine: {translation_engine}. Must be one of: {', '.join(valid_engines)}")
 
@@ -159,6 +159,8 @@ async def create_job(
     missing_keys = []
     if translation_engine == "groq" and not os.environ.get("GROQ_API_KEY"):
         missing_keys.append("GROQ_API_KEY (번역 엔진 Groq 사용시 필요)")
+    if translation_engine == "gemini" and not os.environ.get("GEMINI_API_KEY"):
+        missing_keys.append("GEMINI_API_KEY (번역 엔진 Gemini 사용시 필요)")
     if stt_engine == "groq" and not os.environ.get("GROQ_API_KEY"):
         missing_keys.append("GROQ_API_KEY (STT 엔진 Groq 사용시 필요)")
     if stt_engine == "openai" and not os.environ.get("OPENAI_API_KEY"):
@@ -243,7 +245,7 @@ async def create_job(
     # Detect if input is audio or video
     input_type = detect_input_type(file.filename)
     
-    job_id = job_manager.create_job(settings, file_path, input_type=input_type)
+    job_id = job_manager.create_job(settings, file_path, input_type=input_type, original_filename=file.filename)
     
     # Trigger pipeline
     background_tasks.add_task(pipeline.process_job, job_id)

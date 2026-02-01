@@ -21,6 +21,7 @@ class SyncMode(str, Enum):
 class TranslationEngine(str, Enum):
     LOCAL = "local"
     GROQ = "groq"
+    GEMINI = "gemini"
 
 
 class STTEngine(str, Enum):

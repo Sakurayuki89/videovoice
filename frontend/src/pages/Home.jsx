@@ -41,7 +41,7 @@ export default function Home() {
         cloneVoice: true,
         verifyTranslation: false,
         syncMode: 'speed_audio',  // 'optimize' = natural translation, 'stretch' = extend video
-        translationEngine: 'groq',  // Default to Groq for speed (if key exists)
+        translationEngine: 'gemini',  // Default to Gemini for best quality
         ttsEngine: 'auto', // 'auto' | 'xtts' | 'edge' | 'silero' | 'elevenlabs' | 'openai'
         sttEngine: 'local' // 'local' | 'groq' | 'openai' - Let backend decide default if 'local', but we'll show selector
     });
@@ -71,8 +71,8 @@ export default function Home() {
             syncReason: '대부분의 경우 안정적',
             ttsEngine: 'auto',
             ttsReason: '언어에 맞게 자동 선택',
-            translationEngine: 'groq',
-            translationReason: '빠르고 고품질',
+            translationEngine: 'gemini',
+            translationReason: '최고 품질 다국어 번역',
             sttEngine: 'local',
             sttReason: 'GPU 로컬 처리',
             cloneVoice: true,
@@ -270,9 +270,9 @@ export default function Home() {
             return;
         }
 
-        if (isVideoFile(file) && !extractedAudio) {
-            setError("먼저 '음성 추출' 버튼을 눌러주세요.");
-            return;
+        // Save original video for client-side merge on Result page
+        if (isVideoFile(file)) {
+            saveOriginalVideo(file);
         }
 
         const fileToUpload = file;
@@ -301,7 +301,7 @@ export default function Home() {
     };
 
     const canExtract = file && isVideoFile(file) && !extractedAudio && !extractionState.isExtracting;
-    const canStartDubbing = file && (extractedAudio || isAudioFile(file)) && !isSubmitting;
+    const canStartDubbing = file && !isSubmitting;
     const isExtractionComplete = extractedAudio !== null;
 
     return (
@@ -667,6 +667,7 @@ export default function Home() {
                                             </label>
                                             <div className="space-y-4">
                                                 {[
+                                                    { id: 'gemini', label: 'Gemini 2.5 Flash', desc: '최고 품질 / 다국어 특화' },
                                                     { id: 'groq', label: 'Groq API', desc: '초고속 / 온라인' },
                                                     { id: 'local', label: 'Local (Ollama)', desc: '무료 / 로컬' }
                                                 ].map((engine, index) => (

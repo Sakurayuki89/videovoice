@@ -8,9 +8,16 @@ from ..config import (
     OLLAMA_TIMEOUT as DEFAULT_OLLAMA_TIMEOUT,
     GROQ_API_KEY,
     GROQ_MODEL,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
 )
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+
+class GeminiQuotaError(Exception):
+    """Raised when Gemini API returns 429 / quota exceeded."""
+    pass
 
 # Full language name mapping
 LANGUAGE_NAMES = {
@@ -80,10 +87,15 @@ class Translator:
 
         return text.strip()
 
-    def _call_groq(self, prompt: str) -> str:
+    def _call_groq(self, prompt: str, system_prompt: str = None) -> str:
         """Call Groq API (OpenAI-compatible) and return the response text."""
         if not GROQ_API_KEY:
             raise Exception("GROQ_API_KEY is not set. Please set it in your .env file.")
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
 
         response = requests.post(
             GROQ_API_URL,
@@ -93,10 +105,8 @@ class Translator:
             },
             json={
                 "model": GROQ_MODEL,
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.4
+                "messages": messages,
+                "temperature": 0.3
             },
             timeout=self.timeout
         )
@@ -129,10 +139,44 @@ class Translator:
             raise Exception("Ollama returned empty response")
         return cleaned
 
-    def _call_llm(self, prompt: str, engine: str = "local") -> str:
+    def _call_gemini(self, prompt: str, system_prompt: str = None) -> str:
+        """Call Gemini API and return the response text. Raises GeminiQuotaError on 429."""
+        if not GEMINI_API_KEY:
+            raise Exception("GEMINI_API_KEY is not set. Please set it in your .env file.")
+
+        try:
+            import google.generativeai as genai
+        except ImportError:
+            raise Exception("google-generativeai package not installed. pip install google-generativeai")
+
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(
+            GEMINI_MODEL,
+            system_instruction=system_prompt if system_prompt else None,
+        )
+
+        try:
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.3,
+                    max_output_tokens=8192,
+                ),
+            )
+            text = response.text
+            return self.strip_think_tags(text).strip()
+        except Exception as e:
+            error_str = str(e).lower()
+            if "429" in error_str or "resource exhausted" in error_str or "quota" in error_str:
+                raise GeminiQuotaError(f"Gemini API quota exceeded: {e}")
+            raise
+
+    def _call_llm(self, prompt: str, engine: str = "local", system_prompt: str = None) -> str:
         """Route to the appropriate LLM backend."""
+        if engine == "gemini":
+            return self._call_gemini(prompt, system_prompt=system_prompt)
         if engine == "groq":
-            return self._call_groq(prompt)
+            return self._call_groq(prompt, system_prompt=system_prompt)
         return self._call_ollama(prompt)
 
     def _get_language_specific_instructions(self, target_lang: str, source_lang: str) -> str:
@@ -156,68 +200,138 @@ class Translator:
                 instructions.append("- Map Korean speech levels (존댓말/반말) to matching Japanese politeness (丁寧語/普通体).")
         return "\n".join(instructions)
 
+    # Max characters per chunk for chunked translation
+    CHUNK_THRESHOLD = 600   # Split texts longer than this into chunks
+    CHUNK_TARGET_SIZE = 400  # Target size per chunk (prevents output truncation)
+
+    def _split_into_chunks(self, text: str) -> list[str]:
+        """Split text into sentence-based chunks for better translation quality."""
+        # Split by sentence-ending punctuation (Korean, English, etc.)
+        sentences = re.split(r'(?<=[.!?。！？])\s+', text)
+
+        chunks = []
+        current_chunk = ""
+        for sentence in sentences:
+            if current_chunk and len(current_chunk) + len(sentence) > self.CHUNK_TARGET_SIZE:
+                chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                current_chunk = f"{current_chunk} {sentence}" if current_chunk else sentence
+
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+
+        return chunks if chunks else [text]
+
+    # Few-shot examples for common language pairs to anchor quality
+    FEW_SHOT_EXAMPLES = {
+        ("ko", "ru"): {
+            "source": "이 증상이 계속되면 디스크가 바깥쪽으로 밀려나오게 됩니다.",
+            "target": "Если эти симптомы будут продолжаться, диск начнёт выпячиваться наружу."
+        },
+        ("ko", "en"): {
+            "source": "목을 숙이는 자세를 반복하면 섬유륜에 상처가 발생합니다.",
+            "target": "Repeatedly tilting your head forward can cause damage to the annulus fibrosus."
+        },
+        ("en", "ko"): {
+            "source": "Repeatedly tilting your head forward can cause damage to the annulus fibrosus.",
+            "target": "목을 앞으로 숙이는 자세를 반복하면 섬유륜에 손상이 발생할 수 있습니다."
+        },
+        ("en", "ru"): {
+            "source": "This condition is known as a herniated disc in the cervical spine.",
+            "target": "Это состояние известно как грыжа межпозвоночного диска шейного отдела позвоночника."
+        },
+    }
+
+    def _build_system_prompt(self, s_name: str, t_name: str, sync_mode: str, target_lang: str, source_lang: str) -> str:
+        """Build system prompt for translation with optional few-shot example."""
+        if sync_mode == "optimize":
+            constraint = "Translate concisely. Preserve ALL meaning without unnecessary filler."
+        else:
+            constraint = "Translate COMPLETELY. Every sentence, detail, and nuance must be preserved. Do NOT summarize."
+
+        lang_instructions = self._get_language_specific_instructions(target_lang, source_lang)
+        lang_block = f"\n{lang_instructions}" if lang_instructions else ""
+
+        # Add few-shot example if available
+        example_block = ""
+        example = self.FEW_SHOT_EXAMPLES.get((source_lang, target_lang))
+        if example:
+            example_block = f"""
+
+EXAMPLE:
+Input: {example['source']}
+Output: {example['target']}"""
+
+        return f"""You are a professional {s_name}-to-{t_name} video dubbing translator.
+
+RULES:
+- {constraint}
+- Translate ALL medical/technical terms accurately.
+- Keep the original speaker's perspective (1st person stays 1st person).
+- Match the original tone (professional/casual/humorous).
+- NEVER leave a sentence incomplete or cut off.
+- Do NOT add explanations. Output ONLY the translation.{lang_block}{example_block}"""
+
     def translate(self, text: str, source_lang: str, target_lang: str, sync_mode: str = "optimize", engine: str = "local") -> str:
         if not text or not text.strip():
             return ""
 
-        # Sanitize input to prevent prompt injection
         sanitized_text = self.sanitize_input(text)
         if not sanitized_text:
             return ""
 
-        # Map codes to names
         s_name = LANGUAGE_NAMES.get(source_lang, source_lang)
         t_name = LANGUAGE_NAMES.get(target_lang, target_lang)
 
-        # Build prompt based on sync mode
-        if sync_mode == "optimize":
-            dubbing_constraint = """
-Dubbing Constraint: CONCISE AND NATURAL.
-- Translate concisely. Do NOT add unnecessary filler, elaboration, or paraphrasing.
-- Preserve ALL original meaning and details — do not omit content.
-- Preserve the exact narrative perspective (1st person stays 1st person, 3rd stays 3rd).
-- Keep all medical and technical terms accurate."""
+        system_prompt = self._build_system_prompt(s_name, t_name, sync_mode, target_lang, source_lang)
+
+        # For long texts, translate in chunks to prevent reordering/omissions
+        if len(sanitized_text) > self.CHUNK_THRESHOLD:
+            chunks = self._split_into_chunks(sanitized_text)
+            print(f"[Translator] Long text ({len(sanitized_text)} chars) split into {len(chunks)} chunks")
+            translated_chunks = []
+            for i, chunk in enumerate(chunks):
+                print(f"[Translator] Translating chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
+                result = self._translate_chunk(chunk, system_prompt, engine)
+                # Truncation check: translation should be at least 40% of source length
+                if len(result) < len(chunk) * 0.4:
+                    print(f"[Translator] WARNING: Chunk {i+1} may be truncated ({len(result)} vs {len(chunk)} source chars), retrying...")
+                    result2 = self._translate_chunk(chunk, system_prompt, engine)
+                    if len(result2) > len(result):
+                        result = result2
+                translated_chunks.append(result)
+            return "\n".join(translated_chunks)
         else:
-            # speed_audio and stretch both use full translation
-            dubbing_constraint = """
-Translation Requirement: FULL COMPLETENESS IS MANDATORY.
-- You are FORBIDDEN from summarizing or omitting ANY content.
-- Every single sentence, clause, and nuance from the source must be present.
-- Medical details, examples, and small talk must be preserved exactly.
-- Maintain the original narrative voice (Do not switch from "He said" to "I said").
-- Misinterpretation or omission of medical terms is a critical failure.
-- The goal is a rich, full translation that fills the audio track."""
+            return self._translate_chunk(sanitized_text, system_prompt, engine)
 
-        lang_instructions = self._get_language_specific_instructions(target_lang, source_lang)
-        lang_block = f"\nLANGUAGE-SPECIFIC RULES:\n{lang_instructions}" if lang_instructions else ""
+    def _translate_chunk(self, text: str, system_prompt: str, engine: str) -> str:
+        """Translate a single chunk of text. Auto-fallback from Gemini to Groq on quota error."""
+        prompt = f"""Translate the following text:
 
-        # Use delimiter markers to clearly separate instruction from content
-        prompt = f"""You are a professional video translator and dubbing scriptwriter.
-Your task is to translate {s_name} text to {t_name} for a video dubbing script.
+<text>
+{text}
+</text>
 
-{dubbing_constraint}
-
-CRITICAL RULES:
-1. NO OMISSIONS: Do not summarize. Translate every single detail.
-2. NO HALLUCINATIONS: Do not add facts not present in the text.
-3. NARRATIVE VOICE: Keep the original speaker's perspective (I -> I, He -> He).
-4. TONE: Match the original speaker's tone (Medical/Professional/Casual).
-{lang_block}
-
-<content_to_translate>
-{sanitized_text}
-</content_to_translate>
-
-Output ONLY the translated text without any explanation or additional commentary.
 Translation:"""
-        
+
         max_retries = 3
+        current_engine = engine
+
         for attempt in range(1, max_retries + 1):
             try:
-                result = self._call_llm(prompt, engine)
+                result = self._call_llm(prompt, current_engine, system_prompt=system_prompt)
                 if result:
                     return result
                 print(f"Translation attempt {attempt} returned empty")
+            except GeminiQuotaError as e:
+                print(f"[Translator] Gemini quota exceeded — falling back to Groq")
+                if GROQ_API_KEY:
+                    current_engine = "groq"
+                    continue
+                else:
+                    print(f"[Translator] No Groq API key for fallback")
+                    raise
             except Exception as e:
                 print(f"Translation error (attempt {attempt}): {e}")
 
@@ -226,18 +340,46 @@ Translation:"""
 
         raise Exception("Translation failed after retries")
 
+    def _split_parallel_chunks(self, original: str, translated: str) -> list[tuple[str, str]]:
+        """Split original and translated texts into aligned chunk pairs for refinement."""
+        orig_chunks = self._split_into_chunks(original)
+        trans_chunks = self._split_into_chunks(translated)
+
+        # If chunk counts match, pair them directly
+        if len(orig_chunks) == len(trans_chunks):
+            return list(zip(orig_chunks, trans_chunks))
+
+        # Otherwise, distribute translated text proportionally across original chunks
+        total_orig_len = sum(len(c) for c in orig_chunks)
+        pairs = []
+        trans_joined = " ".join(trans_chunks)
+        pos = 0
+        for i, oc in enumerate(orig_chunks):
+            ratio = len(oc) / total_orig_len if total_orig_len else 1 / len(orig_chunks)
+            take = int(len(trans_joined) * ratio)
+            if i == len(orig_chunks) - 1:
+                tc = trans_joined[pos:]
+            else:
+                # Find nearest space to avoid cutting words
+                end = pos + take
+                space = trans_joined.rfind(" ", pos, end + 50)
+                if space > pos:
+                    end = space
+                tc = trans_joined[pos:end]
+                pos = end
+            pairs.append((oc.strip(), tc.strip()))
+        return pairs
+
     def refine(self, original_text: str, translated_text: str,
                source_lang: str, target_lang: str,
                issues: list, sync_mode: str = "optimize", engine: str = "local") -> str:
-        """Refine a translation based on quality feedback."""
+        """Refine a translation based on quality feedback. Uses chunking for long texts."""
         if not issues:
             return translated_text
 
         s_name = LANGUAGE_NAMES.get(source_lang, source_lang)
         t_name = LANGUAGE_NAMES.get(target_lang, target_lang)
 
-        sanitized_original = self.sanitize_input(original_text)
-        sanitized_translated = self.sanitize_input(translated_text)
         issues_text = "\n".join(f"- {issue}" for issue in issues[:10])
 
         if sync_mode == "optimize":
@@ -248,46 +390,76 @@ Translation:"""
         lang_instructions = self._get_language_specific_instructions(target_lang, source_lang)
         lang_block = f"\nLANGUAGE-SPECIFIC RULES:\n{lang_instructions}" if lang_instructions else ""
 
-        prompt = f"""You are refining a {s_name} to {t_name} translation for video dubbing.
+        system_prompt = f"""You are a professional {s_name}-to-{t_name} translation refiner for video dubbing.
+Fix the identified issues while preserving all content. Output ONLY the improved translation."""
 
-The previous translation had these quality issues:
+        sanitized_original = self.sanitize_input(original_text)
+        sanitized_translated = self.sanitize_input(translated_text)
+
+        # For long texts, refine in chunks
+        if len(sanitized_original) > self.CHUNK_THRESHOLD:
+            pairs = self._split_parallel_chunks(sanitized_original, sanitized_translated)
+            print(f"[Translator] Refining in {len(pairs)} chunks")
+            refined_chunks = []
+            for i, (orig_chunk, trans_chunk) in enumerate(pairs):
+                print(f"[Translator] Refining chunk {i+1}/{len(pairs)}")
+                chunk_result = self._refine_chunk(
+                    orig_chunk, trans_chunk, s_name, t_name,
+                    issues_text, dubbing_constraint, lang_block,
+                    system_prompt, engine
+                )
+                refined_chunks.append(chunk_result)
+            return "\n".join(refined_chunks)
+        else:
+            return self._refine_chunk(
+                sanitized_original, sanitized_translated, s_name, t_name,
+                issues_text, dubbing_constraint, lang_block,
+                system_prompt, engine
+            )
+
+    def _refine_chunk(self, original: str, translated: str,
+                      s_name: str, t_name: str,
+                      issues_text: str, dubbing_constraint: str,
+                      lang_block: str, system_prompt: str, engine: str) -> str:
+        """Refine a single chunk. Auto-fallback from Gemini to Groq on quota error."""
+        prompt = f"""The previous translation had these issues:
 {issues_text}
 
 {dubbing_constraint}
 
-REFINEMENT GUIDE:
-- If the issue is about accuracy: fix mistranslations, restore omitted content.
-- If the issue is about naturalness: rephrase to sound native, fix awkward phrasing.
-- If the issue is about dubbing fit: adjust length without losing meaning.
-- If the issue is about consistency: unify terminology, tone, and style.
-
-CRITICAL RULES:
-1. NO OMISSIONS: Do not summarize. Translate every single detail.
-2. NO HALLUCINATIONS: Do not add facts not present in the original.
-3. NARRATIVE VOICE: Keep the original speaker's perspective (I -> I, He -> He).
-4. TONE: Match the original speaker's tone.
+Fix these issues:
+- Accuracy problems: fix mistranslations, restore omitted content.
+- Naturalness: rephrase to sound native.
+- Dubbing fit: adjust length without losing meaning.
+- Consistency: unify terminology and tone.
 {lang_block}
 
 Original ({s_name}):
-<content_to_translate>
-{sanitized_original}
-</content_to_translate>
+<text>
+{original}
+</text>
 
 Previous Translation ({t_name}):
-{sanitized_translated}
-
-Provide an improved translation that fixes the issues above.
-Output ONLY the improved translated text without any explanation.
+<text>
+{translated}
+</text>
 
 Improved Translation:"""
 
         max_retries = 2
+        current_engine = engine
         for attempt in range(1, max_retries + 1):
             try:
-                result = self._call_llm(prompt, engine)
+                result = self._call_llm(prompt, current_engine, system_prompt=system_prompt)
                 if result:
                     return result
                 print(f"Refinement attempt {attempt} returned empty")
+            except GeminiQuotaError:
+                print(f"[Translator] Gemini quota exceeded during refinement — falling back to Groq")
+                if GROQ_API_KEY:
+                    current_engine = "groq"
+                    continue
+                raise
             except Exception as e:
                 print(f"Refinement error (attempt {attempt}): {e}")
 
@@ -295,5 +467,5 @@ Improved Translation:"""
                 time.sleep(2 ** attempt)
 
         # If refinement fails, return original translation
-        print("Refinement failed, keeping original translation")
-        return translated_text
+        print("Refinement chunk failed, keeping original")
+        return translated

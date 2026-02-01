@@ -58,9 +58,9 @@ class JobManager:
         except (ValueError, AttributeError):
             return False
 
-    def create_job(self, settings: JobSettings, input_file: str, input_type: str = "video") -> str:
+    def create_job(self, settings: JobSettings, input_file: str, input_type: str = "video", original_filename: str = None) -> str:
         job_id = str(uuid.uuid4())
-        input_filename = os.path.basename(input_file) if input_file else None
+        input_filename = original_filename or (os.path.basename(input_file) if input_file else None)
 
         # For audio input, skip extract and merge steps
         if input_type == "audio":

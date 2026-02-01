@@ -18,7 +18,9 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(title="VideoVoice API", version="0.1.0")
 
 # CORS Configuration - Restrict to known origins
-ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174").split(",")
+_env_origins = os.environ.get("CORS_ORIGINS", "")
+_default_origins = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"]
+ALLOWED_ORIGINS = list(set(o.strip() for o in _env_origins.split(",") if o.strip()) | set(_default_origins))
 
 app.add_middleware(
     CORSMiddleware,

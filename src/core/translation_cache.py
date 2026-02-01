@@ -58,3 +58,13 @@ class TranslationCache:
             )
         except OSError as e:
             print(f"[Cache] Failed to write: {e}")
+
+    def invalidate(self, text: str, source_lang: str, target_lang: str, sync_mode: str) -> bool:
+        """Remove a cached entry. Returns True if deleted."""
+        key = self._make_key(text, source_lang, target_lang, sync_mode)
+        path = self._path(key)
+        try:
+            path.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
