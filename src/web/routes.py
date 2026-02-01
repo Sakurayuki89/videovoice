@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends, Request
+from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
 from typing import Optional
 import shutil
@@ -10,6 +11,7 @@ from collections import defaultdict
 from .models import JobSettings, JobResponse, SyncMode, TranslationEngine, TTSEngine, STTEngine
 from .manager import job_manager
 from ..core.pipeline import pipeline
+from ..config import STT_ENGINE  # Import default STT engine from config
 
 router = APIRouter(prefix="/api")
 
@@ -20,7 +22,11 @@ OUTPUT_DIR = "static/outputs"
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
 ALLOWED_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".mp3", ".wav", ".flac", ".ogg"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg"}
-ALLOWED_LANGUAGES = {"auto", "en", "ko", "ja", "ru", "zh", "es", "fr", "de"}
+ALLOWED_LANGUAGES = {
+    "auto", "en", "ko", "ja", "zh", "ru",
+    "es", "fr", "de", "it", "pt", "nl",
+    "pl", "tr", "vi", "th", "ar", "hi",
+}
 
 # Authentication
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -126,9 +132,9 @@ async def create_job(
     clone_voice: bool = Form(True),
     verify_translation: bool = Form(False),
     sync_mode: str = Form("optimize"),
-    translation_engine: str = Form("local"),
+    translation_engine: str = Form("groq"),  # Match frontend default
     tts_engine: str = Form("auto"),
-    stt_engine: str = Form("local")
+    stt_engine: str = Form(STT_ENGINE)  # Use config default here
 ):
     # Rate limit check
     check_rate_limit(request)
@@ -147,6 +153,29 @@ async def create_job(
     valid_tts_engines = {"auto", "xtts", "edge", "silero", "elevenlabs", "openai"}
     if tts_engine not in valid_tts_engines:
         raise HTTPException(status_code=400, detail=f"Invalid tts_engine: {tts_engine}. Must be one of: {', '.join(valid_tts_engines)}")
+
+    # --- HIGH PRIORITY: API Key Pre-Validation ---
+    # Check if required API keys exist for selected engines
+    missing_keys = []
+    if translation_engine == "groq" and not os.environ.get("GROQ_API_KEY"):
+        missing_keys.append("GROQ_API_KEY (번역 엔진 Groq 사용시 필요)")
+    if stt_engine == "groq" and not os.environ.get("GROQ_API_KEY"):
+        missing_keys.append("GROQ_API_KEY (STT 엔진 Groq 사용시 필요)")
+    if stt_engine == "openai" and not os.environ.get("OPENAI_API_KEY"):
+        missing_keys.append("OPENAI_API_KEY (STT 엔진 OpenAI 사용시 필요)")
+    if tts_engine == "elevenlabs" and not os.environ.get("ELEVENLABS_API_KEY"):
+        missing_keys.append("ELEVENLABS_API_KEY (TTS 엔진 ElevenLabs 사용시 필요)")
+    if tts_engine == "openai" and not os.environ.get("OPENAI_API_KEY"):
+        missing_keys.append("OPENAI_API_KEY (TTS 엔진 OpenAI 사용시 필요)")
+    if verify_translation and not os.environ.get("GEMINI_API_KEY"):
+        missing_keys.append("GEMINI_API_KEY (번역 검증 사용시 필요)")
+    
+    if missing_keys:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"필수 API 키가 설정되지 않았습니다: {'; '.join(set(missing_keys))}"
+        )
+    # --- End API Key Pre-Validation ---
 
     # Validate language codes
     if not validate_language(source_lang):
@@ -265,3 +294,31 @@ async def cancel_job(request: Request, job_id: str):
         )
 
     return {"message": "Job cancelled successfully", "job_id": validated_id}
+
+
+@router.get("/jobs/{job_id}/download", dependencies=[Depends(verify_api_key)])
+async def download_job_output(request: Request, job_id: str):
+    """Download the output file for a completed job with Content-Disposition header."""
+    check_rate_limit(request)
+    validated_id = validate_job_id(job_id)
+
+    job = job_manager.get_job(validated_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.output_file:
+        raise HTTPException(status_code=404, detail="No output file available")
+
+    # output_file is like "/static/outputs/dubbed_xxx.mp4"
+    file_path = os.path.abspath(job.output_file.lstrip("/"))
+    output_dir = os.path.abspath(OUTPUT_DIR)
+    if not file_path.startswith(output_dir) or not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="Output file not found on disk")
+
+    ext = os.path.splitext(file_path)[1]
+    filename = f"videovoice_{validated_id[:8]}{ext}"
+
+    return FileResponse(
+        file_path,
+        filename=filename,
+        media_type="application/octet-stream",
+    )

@@ -19,6 +19,13 @@ class PipelineCancelledException(Exception):
     pass
 
 
+def get_engine_value(settings, field: str, default: str) -> str:
+    """Safely extract engine value from settings, handling both enum and string types."""
+    value = getattr(settings, field, default)
+    return value.value if hasattr(value, 'value') else value
+
+
+
 class PipelineStepError(Exception):
     """Raised when a pipeline step fails with context."""
     def __init__(self, step: str, message: str):
@@ -133,10 +140,9 @@ class Pipeline:
             # Step 2: Transcribe
             current_step = "transcribe"
             job_manager.update_step(job_id, "transcribe", "processing")
-            stt_engine = getattr(job.settings, 'stt_engine', 'local')
-            if hasattr(stt_engine, 'value'):
-                stt_engine = stt_engine.value
+            stt_engine = get_engine_value(job.settings, 'stt_engine', 'local')
             log(f"Transcribing audio (engine: {stt_engine})...")
+
             stt = STTModule(engine=stt_engine)
             source_lang = job.settings.source_lang if job.settings.source_lang != 'auto' else None
             
@@ -166,11 +172,9 @@ class Pipeline:
             current_step = "translate"
             job_manager.update_step(job_id, "translate", "processing")
             sync_mode = getattr(job.settings, 'sync_mode', 'optimize')
-            translation_engine = getattr(job.settings, 'translation_engine', 'local')
-            # Convert enum to string if needed
-            if hasattr(translation_engine, 'value'):
-                translation_engine = translation_engine.value
+            translation_engine = get_engine_value(job.settings, 'translation_engine', 'local')
             log(f"Translating to {job.settings.target_lang}... (sync_mode: {sync_mode}, engine: {translation_engine})")
+
             translator = Translator()
 
             # Initialize translation cache
@@ -291,16 +295,17 @@ class Pipeline:
             job_manager.update_step(job_id, "tts", "processing")
 
             # Resolve TTS engine
-            tts_engine = getattr(job.settings, 'tts_engine', 'auto')
+            tts_engine = get_engine_value(job.settings, 'tts_engine', 'auto')
             clone_voice = getattr(job.settings, 'clone_voice', True)
-            if hasattr(tts_engine, 'value'):
-                tts_engine = tts_engine.value
+
 
             if tts_engine == "auto":
-                if clone_voice:
+                from ..config import TTS_AUTO_SELECT, ELEVENLABS_API_KEY
+                if ELEVENLABS_API_KEY:
+                    tts_engine = "elevenlabs"
+                elif clone_voice:
                     tts_engine = "xtts"
                 else:
-                    from ..config import TTS_AUTO_SELECT
                     tts_engine = TTS_AUTO_SELECT.get(job.settings.target_lang, "edge")
 
             log(f"Generating Speech ({tts_engine.upper()}, clone_voice={clone_voice})...")

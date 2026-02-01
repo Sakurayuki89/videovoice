@@ -1,0 +1,7 @@
+/* App specific styles if needed */
+.logo-gradient {
+  background: var(--accent-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-weight: 800;
+}

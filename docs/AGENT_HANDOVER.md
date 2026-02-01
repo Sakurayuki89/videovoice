@@ -1,136 +1,80 @@
-# AI Agent Handover & Project Context
+# VideoVoice 더빙 비디오 출력 문제 수정 요청
 
-**Last Updated:** 2026-01-25 (Revised)
-**Project:** VideoVoice (Local Multilingual Video Voice Transformation)
-**Target Hardware:** RTX 3060 12GB / Windows / CUDA 12.1
+## 현재 상황
 
----
+VideoVoice는 AI 기반 로컬 비디오 더빙 시스템입니다. 사용자가 비디오를 업로드하면 음성을 추출하고, 번역하고, TTS로 새 음성을 생성하여 더빙된 비디오를 출력하는 것이 목표입니다.
 
-## 1. Project Status Dashboard
-> 현재 프로젝트가 어떤 상태인지 요약합니다. 작업 시작 전 반드시 확인하세요.
+### 워크플로우 (현재)
 
-| Phase | Status | Details |
-|-------|--------|---------|
-| **Environment Setup** | ✅ **Done** | Python, CUDA, WhisperX, TTS, FFmpeg, Ollama 설치 완료 (Green Light) |
-| **Core Module Impl** | ⬜ Ready | `src/` 구조 설계 및 모듈 구현 전 |
-| **Integration** | ⬜ Pending | 파이프라인 통합 전 |
-| **Optimization** | ⬜ Pending | 10~15분 영상 처리 최적화 전 |
+1. **Home 페이지:** 사용자가 비디오 파일 선택
+2. **"음성 추출" 버튼:** 클라이언트에서 FFmpeg WASM으로 오디오 추출 (MP3)
+3. **"더빙 시작" 버튼:** 추출된 오디오(MP3)를 서버에 업로드
+4. **서버 처리:** STT → 번역 → TTS → 결과 출력 (오디오만!)
+5. **결과:** WAV 오디오만 다운로드 가능, **비디오 없음**
 
-**Current Focus**: `src/` 디렉토리 내 핵심 모듈(STT, Translation, TTS) 스켈레톤 코드 작성 및 단위 테스트.
+## 문제점
 
----
+### 핵심 문제
+`frontend/src/pages/Home.jsx`의 `handleStartDubbing` 함수에서 **추출된 오디오(extractedAudio)**를 업로드합니다:
 
-## 2. Error & Resolution Log
-> 개발 중 마주친 에러와 해결책을 기록하여 삽질을 방지합니다.
+```javascript
+// Home.jsx 약 192라인
+const fileToUpload = extractedAudio || file;
+```
 
-| Date | Type | Symptom (Error Msg) | Root Cause | Solution | Prevention |
-|------|------|---------------------|------------|----------|------------|
-| 2026-01-25 | 🔴 Critical | `pip install TTS` Build Error (`cl.exe` missing) | C++ Build Tools 누락 | VS Build Tools 2022 설치 (C++ Desktop Workload) | Env Check Script에 확인 로직 추가 불가능(OS레벨) |
-| 2026-01-25 | 🔴 Critical | `torch.cuda.is_available() == False` | `pip install torch`는 기본적으로 CPU 버전 설치 | CUDA 12.1용 Torch 재설치 (`--index-url` 지정) | `check_env.py`에서 CUDA 검사 수행 |
-| 2026-01-25 | 🟠 Major | `numpy.core.multiarray failed to import` | Numpy 2.0과 TTS(Scipy) 호환성 문제 | `pip install "numpy<2.0"`으로 다운그레이드 | `requirements.txt`에 버전 명시 필요 |
+서버(`src/core/pipeline.py`)는 입력 파일 타입을 확인하여:
+- **비디오 입력:** Extract → STT → 번역 → TTS → **Merge(비디오 병합)** → MP4 출력
+- **오디오 입력:** STT → 번역 → TTS → **Merge 건너뜀** → WAV 출력
 
-### 2.1 Code Review & Fixes (2026-01-25)
+현재는 오디오만 업로드되므로 **비디오 병합이 수행되지 않습니다.**
 
-잠재적 오류 요인 검토 후 아래 항목들을 수정함:
+## 해결 방안 (Option A)
 
-| Priority | Issue | Fix Applied | File |
-|----------|-------|-------------|------|
-| 🔴 Critical | Ollama API 타임아웃 없음 → 무한 대기 가능 | `timeout=120` 추가 + `Timeout` 예외 처리 | `pipeline_verify.py:113` |
-| 🔴 Critical | VRAM 누수 (예외 시 `del model` 미실행) | `finally` 블록으로 메모리 해제 보장 | `pipeline_verify.py:76-80, 170-174` |
-| 🔴 Critical | Qwen3 `<think>` 태그가 번역 결과에 포함 | `strip_thinking_tags()` 함수 추가 | `pipeline_verify.py:82-87` |
-| 🟠 Major | 재시도 로직 부재 | Exponential backoff 3회 재시도 (2s→4s→8s) | `pipeline_verify.py:90-145` |
-| 🟠 Major | 필수 모델 검증 누락 | `qwen3:14b` 존재 여부 검사 + 설치 가이드 | `check_env.py:42-82` |
-| 🟠 Major | 경로 하드코딩 | `PROJECT_ROOT`, `get_test_path()` 도입 | `pipeline_verify.py:10-17` |
-| 🟠 Major | Speaker Reference 품질 경고 없음 | 더미 sine wave 사용 시 WARNING 출력 | `pipeline_verify.py:31` |
-| 🟡 Minor | 에러 스택 트레이스 누락 | `traceback.print_exc()` 추가 | 각 except 블록 |
-| 🟡 Minor | 입력 검증 없음 | `validate_file_exists()`, `validate_text()` 함수 추가 | `pipeline_verify.py:29-51` |
-| 🟡 Minor | FFmpeg 에러 처리 미흡 | `FileNotFoundError`, `CalledProcessError` 개별 처리 | `pipeline_verify.py:76-86` |
-| 🟡 Minor | VRAM 용량 검사 없음 | `check_cuda()`에 VRAM 용량 검증 추가 (8GB 미만 경고) | `check_env.py:26-36` |
-| 🟡 Minor | WARNING 상태 색상 없음 | `print_status()`에 노란색(WARNING) 추가 | `check_env.py:12-13` |
+**원본 비디오 파일을 업로드**하도록 수정합니다.
+"음성 추출"은 미리듣기/확인 용도로 유지하고, 실제 처리는 원본 비디오 기반으로 수행합니다.
 
----
+## 수정 사항
 
-## 3. Architecture Decision Records (ADR)
-> 왜 이런 기술/구조를 선택했는지에 대한 의사결정 기록입니다.
+### 파일: `frontend/src/pages/Home.jsx`
 
-### ADR-001: Sequential Processing vs Parallel Processing
-- **Context**: 12GB VRAM 제약 하에서 STT(Whisper large-v3), LLM(Qwen 14b), TTS(XTTS)를 운용해야 함.
-- **Decision**: **완전 순차 처리 (Fully Sequential)** 및 **Explicit VRAM Clearing**.
-- **Rationale**: 
-  - 세 모델을 동시에 올리면 VRAM 부족(OOM) 확정. (Whisper ~3GB, Qwen ~9GB, TTS ~3GB -> Total > 12GB)
-  - 한 단계가 끝나면 `del model`, `gc.collect()`, `torch.cuda.empty_cache()`를 수행하여 메모리를 비운 후 다음 모델 로드.
-- **Consequences**: 처리 속도는 느려지나 안정성 확보. 실시간 처리가 아닌 Offline Processing이므로 허용 가능.
+`handleStartDubbing` 함수 내에서 `fileToUpload` 변수 수정:
 
-### ADR-002: Translate Engine Selection (Ollama)
-- **Context**: 로컬 LLM 구동을 위한 런타임 필요.
-- **Decision**: **Ollama** 사용.
-- **Rationale**: Python 라이브러리 직접 로드보다 프로세스 격리가 쉬워 VRAM 관리에 유리하며, REST API 래핑이 되어 있어 연동이 간편함.
+**Before (약 192라인):**
+```javascript
+const fileToUpload = extractedAudio || file;
+```
 
-### ADR-003: VRAM 해제 패턴 (try-finally)
-- **Context**: 예외 발생 시 모델 객체가 삭제되지 않아 VRAM 누수 발생 가능.
-- **Decision**: **try-finally 패턴** 적용. 모델 변수를 `None`으로 초기화 후, `finally` 블록에서 조건부 삭제.
-- **Rationale**:
-  - 예외 발생 여부와 관계없이 메모리 해제 보장.
-  - Context manager (`with` 문) 대비 기존 코드 변경 최소화.
-- **Pattern**:
-  ```python
-  model = None
-  try:
-      model = load_model()
-      result = model.run()
-      return result
-  finally:
-      if model is not None:
-          del model
-      clear_vram()
-  ```
+**After:**
+```javascript
+// 항상 원본 파일을 업로드 (서버에서 비디오 병합 가능하도록)
+// extractedAudio는 미리듣기 용도로만 사용
+const fileToUpload = file;
+```
 
-### ADR-004: API 재시도 전략 (Exponential Backoff)
-- **Context**: 네트워크 일시 오류, Ollama 서버 과부하 시 즉시 실패하면 사용자 경험 저하.
-- **Decision**: **3회 재시도 + Exponential Backoff (2초, 4초, 8초)**.
-- **Rationale**:
-  - 일시적 오류 복구 기회 제공.
-  - 과도한 재시도로 인한 서버 부하 방지 (지수 증가 대기).
-  - 총 최대 대기 시간: 14초 (2+4+8) + 요청 시간.
-- **Consequences**: 최악의 경우 응답 시간 증가, 하지만 Offline Processing이므로 허용 가능.
+## 테스트 방법
 
----
+1. 서버 실행: `venv\Scripts\python.exe -u scripts\start_app.py`
+2. 브라우저에서 `http://localhost:5173` 접속
+3. 짧은 비디오 파일(30초 이하) 업로드
+4. "음성 추출" 클릭 → 완료 확인 (선택사항, 미리듣기용)
+5. "더빙 시작" 클릭
+6. 처리 완료 후 결과 페이지에서 **"MP4 다운로드"** 버튼 확인
+7. 다운로드된 비디오 재생하여 더빙 음성 확인
 
-## 4. Stability & Performance Metrics (To be filled)
-> 실제 구동 데이터를 기록하여 안정성을 모니터링합니다.
+## 예상 결과
 
-| Component | VRAM Usage (Peak) | Processing Speed (RT Factor) | GPU Util | Notes |
-|-----------|-------------------|------------------------------|----------|-------|
-| WhisperX  | ~3.5 GB           | Fast                         | N/A      | Loaded 'large-v3' (float16). Sine wave input produced valid empty/noise result. |
-| Qwen3:14b | ~9.3 GB (Ollama)  | Fast (Text-to-Text)          | N/A      | Successfully translated EN->KO via local API. |
-| XTTS v2   | ~3 GB             | ~1.03x (RTF)                 | N/A      | Successfully generated KO audio. Sequential execution required. |
+- 결과 페이지에서 **"미디어를 불러올 수 없습니다"** 대신 비디오 미리보기 표시
+- **"MP4 다운로드"** 버튼 활성화
+- 다운로드된 MP4 파일에 목표 언어로 더빙된 음성 포함
 
-**Verification Result (2026-01-25)**: `tests/pipeline_verify.py` successfully completed the full loop (Input -> STT -> Translate -> TTS) on RTX 3060 12GB using sequential processing. VRAM was cleared effectively between steps.
+## 관련 파일
 
-**Code Review (2026-01-25)**: 잠재적 오류 요인 검토 완료. Critical 3건, Major 4건, Minor 5건 수정됨. 상세 내용은 섹션 2.1 참조.
+- `frontend/src/pages/Home.jsx` - 수정 대상
+- `src/core/pipeline.py` - `process_job` 함수 (참고용, 수정 불필요)
+- `src/web/routes.py` - 업로드 처리 (참고용, 수정 불필요)
 
----
+## 주의사항
 
-## 5. Scalability & Tech Debt
-> 확장성을 위한 인터페이스 변경이나 해결해야 할 기술 부채를 기록합니다.
-
-### Resolved
-- ✅ **Error Handling**: try-finally 패턴으로 VRAM 누수 방지 (ADR-003)
-- ✅ **Retry Logic**: Exponential backoff 재시도 구현 (ADR-004)
-- ✅ **Path Handling**: 절대 경로 사용으로 작업 디렉토리 독립성 확보
-- ✅ **Model Validation**: `check_env.py`에서 필수 Ollama 모델 검증
-- ✅ **Input Validation**: `validate_file_exists()`, `validate_text()` 함수로 입력 검증
-- ✅ **VRAM Capacity Check**: `check_env.py`에서 GPU 메모리 용량 검사 (8GB 미만 경고)
-- ✅ **Detailed Error Messages**: FFmpeg, Ollama 등 개별 에러 타입별 명확한 메시지
-
-### Pending
-- **[Pending] Config Management**: 현재 하드코딩된 설정값들이 존재할 수 있음. `config.yaml` 등으로 중앙화 필요.
-- **[Pending] Logging System**: 단순 `print` 대신 `logging` 모듈을 통한 체계적인 파일 로깅 필요.
-- **[Pending] Project Structure**: `src` 폴더 내부가 아직 비어있음. 표준 패키지 구조(`__init__.py` 등) 준수 필요.
-
----
-
-## 6. How to Use This Document (For Agents)
-1. 새로운 작업을 시작하기 전, **1. Project Status**와 **2. Error Log**를 읽고 컨텍스트를 로드하세요.
-2. 중요한 기술적 결정(모델 변경, 라이브러리 교체 등)을 할 때는 **3. ADR**에 항목을 추가하세요.
-3. 작업이 끝나면 완료된 내역을 바탕으로 각 섹션을 업데이트하세요.
+- "음성 추출" 기능은 그대로 유지 (미리듣기와 자막 확인 용도)
+- 변수 `canStartDubbing`, `isExtractionComplete` 등은 수정하지 않음
+- 버튼 렌더링 조건도 수정하지 않음 (추출 완료 후에만 더빙 시작 활성화)

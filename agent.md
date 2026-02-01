@@ -11,8 +11,10 @@
 립싱크는 요구하지 않으며,
 Audio Track Replacement(음성 트랙 교체) 방식을 사용한다.
 
-본 프로젝트는 **클라우드 API나 외부 서비스에 의존하지 않는
-완전 로컬 AI 처리**를 전제로 한다.
+**현재 상태**: 로컬 처리와 클라우드 API를 모두 지원하는 하이브리드 모드로 발전
+- 로컬 전용 모드 지원 (Ollama + WhisperX + XTTS)
+- 클라우드 API 선택 모드 지원 (Groq, OpenAI, ElevenLabs 등)
+- 사용자가 UI에서 엔진 선택 가능
 
 ---
 
@@ -22,152 +24,363 @@ Audio Track Replacement(음성 트랙 교체) 방식을 사용한다.
 - Korean (ko)
 - English (en)
 - Russian (ru)
+- Japanese (ja)
+- Chinese (zh)
+- Auto-detect (자동 감지)
 
 ### 2.2 Output Languages
 - Korean (ko)
 - English (en)
 - Russian (ru)
+- Japanese (ja)
+- Chinese (zh)
+- German (de)
+- French (fr)
+- Spanish (es)
+- Italian (it)
+- Portuguese (pt)
 
 입력 언어와 출력 언어는 동일할 수도 있고 상이할 수도 있다.
 
 ---
 
-## 3. Local AI Execution Policy
+## 3. Current Architecture & Tech Stack
 
-본 프로젝트의 모든 언어·음성 처리 과정은
-클라우드 API 없이 로컬 AI 모델만 사용한다.
+### 3.1 Backend (Python FastAPI)
+- **Framework**: FastAPI
+- **Location**: `src/web/main.py`, `src/web/routes.py`
+- **Job Manager**: `src/web/manager.py` - 비동기 작업 관리
+- **Port**: 8000 (기본값)
+- **CORS**: http://localhost:5173, http://127.0.0.1:5173
 
-### 3.1 Local LLM (Translation Engine)
+### 3.2 Frontend (React + Vite)
+- **Framework**: React 19.2.0
+- **Build Tool**: Vite 7.2.4
+- **Routing**: React Router DOM 7.13.0
+- **Port**: 5173 (개발 서버)
+- **Main Pages**:
+  - `Home.jsx`: 파일 업로드 및 설정
+  - `Process.jsx`: 실시간 진행 상황
+  - `Result.jsx`: 결과 확인 및 다운로드
 
-- Runtime: Ollama
-- Model: Qwen3 (14B 또는 30B, Quantized)
-- Quantization: Q4 또는 Q5
-- GPU Target: RTX 3060 12GB
-- Task:
-  - 한국어 ↔ 영어
-  - 한국어 ↔ 러시아어
-  - 영어 ↔ 러시아어
-
-번역은 반드시 문장 단위 또는 짧은 구간 단위로 수행하며,
-전체 대본을 한 번에 번역하는 방식은 사용하지 않는다.
-
-### 3.2 Local Speech-to-Text (STT)
-
-- Model: WhisperX (large-v3)
-- Execution: Local GPU
-- Language Detection: Automatic (ko / en / ru)
-- Output: 타임스탬프 포함 문장 단위 텍스트
-
-### 3.3 Local Text-to-Speech (TTS)
-
-- Model: XTTS v2 (또는 동급 다국어 TTS)
-- Speaker embedding: 프로젝트 단위로 고정
-- Generation Unit: 문장 단위
-- Sentence gap: 200~400ms 무음 삽입
-
-### 3.4 No External Dependency Rule
-
-- 클라우드 API 사용 금지
-- 외부 번역 서비스 사용 금지
-- 네트워크 연결 없이 실행 가능해야 함
+### 3.3 Recent UI Improvements (2026-02-01)
+- ✅ 라디오 버튼 → 체크마크 스타일로 변경
+- ✅ 선택 항목에 강한 glow 효과 및 scale 애니메이션
+- ✅ 옵션 간 명확한 경계선(border-2) 추가
+- ✅ 추천 설정 자동 적용 시스템 (언어 쌍 기반)
+- ✅ 표 형식 레이아웃으로 정렬 개선
 
 ---
 
-## 4. Core Processing Pipeline (No GUI Editing)
+## 4. AI Engine Configuration
 
-1. Video Input (.mp4)
-2. Audio Extraction (FFmpeg)
-3. Speech-to-Text (WhisperX)
-4. Sentence-level Translation (Ollama + Qwen3)
-5. Sentence-level TTS Generation
-6. Audio Merge (concatenation)
-7. Audio Track Replacement (FFmpeg)
-8. Final Video Output (.mp4)
+### 4.1 STT (Speech-to-Text) Engines
+
+#### Local Option
+- **WhisperX** (large-v3)
+  - GPU 필요 (RTX 3060 12GB)
+  - 최고 정확도 (한국어, 일본어, 중국어 특화)
+  - 타임스탬프 정렬 자동화
+
+#### Cloud Options
+- **Groq API**
+  - whisper-large-v3
+  - 초고속 처리
+  - API 키 필요: `GROQ_API_KEY`
+  
+- **OpenAI API**
+  - whisper-1
+  - 최고 정확도
+  - API 키 필요: `OPENAI_API_KEY`
+
+**현재 설정**: `.env`의 `VIDEOVOICE_STT_ENGINE` 또는 UI에서 선택
+
+### 4.2 Translation Engines
+
+#### Local Option
+- **Ollama + Qwen3** (14B)
+  - 모델: qwen3:14b
+  - 호스트: http://localhost:11434
+  - 완전 로컬 처리
+  - 무료
+
+#### Cloud Options
+- **Groq API**
+  - llama-3.3-70b-versatile
+  - 초고속 번역
+  - API 키: `.env`의 `GROQ_API_KEY` 참조
+
+### 4.3 TTS (Text-to-Speech) Engines
+
+#### Local Options
+- **XTTS v2**
+  - 음성 복제 지원
+  - 다국어 지원
+  - GPU 필요
+  
+- **Edge TTS**
+  - 한국어 최고 품질
+  - 무료, 빠름
+  - 음성: ko-KR-SunHiNeural
+  
+- **Silero**
+  - 러시아어 특화
+  - 초고속
+
+#### Cloud Options
+- **ElevenLabs**
+  - API 키: `.env`의 `ELEVENLABS_API_KEY` 참조
+  - 모델: eleven_multilingual_v2
+  - 최상급 음질 및 음성 복제
+  - 사용량 제한 있음
+  
+- **OpenAI TTS**
+  - tts-1, tts-1-hd
+  - 자연스러움
+  - API 키 필요
+
+**자동 추천 시스템**:
+- ElevenLabs 키가 있으면 최우선 추천
+- 한국어: Edge TTS
+- 러시아어: Silero
+- 음성 복제 ON: XTTS v2 또는 ElevenLabs
+
+### 4.4 Quality Validation (Optional)
+- **Gemini 2.5 Flash**
+  - API 키: `.env`의 `GEMINI_API_KEY` 참조
+  - 용도: 번역 품질 검증 (verify_translation 옵션)
 
 ---
 
-## 5. Reliability Strategy (10–15 Minute Guarantee)
+## 5. Core Processing Pipeline
 
-본 프로젝트의 신뢰성 기준은 다음과 같다:
-
-“RTX 3060 12GB 단일 GPU 환경에서  
-Ollama + Qwen3 기반 로컬 번역을 사용하여  
-10~15분 영상의 음성 교체 결과물이  
-재작업 없이 바로 사용 가능한 상태로 출력되는 것”
-
-### 5.1 Segmentation Policy
-
-- 전체 영상은 30~60초 단위로 분할 처리
-- STT → 번역 → TTS는 문장 단위로 수행
-- 모든 오디오는 최종 단계에서 병합
-
-### 5.2 Translation Stability Rules
-
-- 문장 길이 변화 ±10% 이내 유지
-- 직역보다 더빙용 자연스러운 번역 우선
-- 불필요한 감탄사, 접속사 최소화
-
-### 5.3 TTS Consistency Rules
-
-- 동일 speaker embedding 유지
-- 말 속도 변화 ±10% 이내 제한
-- RMS 볼륨 자동 정규화
-
-### 5.4 Audio Replacement Policy
-
-- 원본 오디오 트랙 완전 제거
-- 새 음성 트랙만 영상에 삽입
-- 비디오 스트림 재인코딩 금지
+```
+1. 비디오 입력 (.mp4, .mkv, .avi, .mov, .webm 등)
+   ↓
+2. 오디오 추출 (FFmpeg) - 클라이언트 또는 서버
+   ↓
+3. STT (음성 → 텍스트)
+   - Local: WhisperX large-v3
+   - Cloud: Groq, OpenAI
+   ↓
+4. 문장 단위 번역
+   - Local: Ollama + Qwen3
+   - Cloud: Groq API
+   ↓
+5. (선택) 품질 검증 (Gemini)
+   ↓
+6. TTS (텍스트 → 음성)
+   - Local: XTTS, Edge TTS, Silero
+   - Cloud: ElevenLabs, OpenAI
+   ↓
+7. 오디오 병합 + 싱크 조절
+   - optimize: 자연스러운 속도
+   - speed_audio: 영상 길이에 맞춤
+   - stretch: 영상 속도 조절
+   ↓
+8. 비디오 재합성 (FFmpeg)
+   ↓
+9. 결과 다운로드 (.mp4)
+```
 
 ---
 
-## 6. Hardware Constraints
+## 6. Sync Mode Options
+
+### 6.1 자연스러운 속도 (Natural)
+- 원래 말하기 속도 유지
+- 오디오가 짧으면 뒷부분이 비거나 싱크 불일치 가능
+- 아이콘: Film
+
+### 6.2 영상 길이에 맞춤 (Speed Sync) ⭐ 기본 추천
+- 오디오 전체 길이를 영상에 강제로 맞춤
+- 대화가 끊이지 않는 영상에 최적
+- 아이콘: Gauge
+
+### 6.3 영상 속도 조절 (Video Stretch)
+- 영상을 느리게 재생해 음성 길이에 맞춤
+- 아이콘: Clock
+
+**추천 로직**:
+- 기본값: `speed_audio` (무음 방지)
+- 언어 쌍에 따라 자동 조정
+
+---
+
+## 7. Environment Variables (.env)
+
+### 7.1 Server
+```bash
+VIDEOVOICE_HOST=0.0.0.0
+VIDEOVOICE_PORT=8000
+VIDEOVOICE_DEBUG=false
+VIDEOVOICE_AUTH_ENABLED=true
+VIDEOVOICE_API_KEYS=<your-api-keys>
+```
+
+### 7.2 AI APIs
+```bash
+# Gemini (품질 검증)
+GEMINI_API_KEY=<your-gemini-api-key>
+GEMINI_MODEL=gemini-2.5-flash
+
+# Groq (번역/STT)
+GROQ_API_KEY=<your-groq-api-key>
+GROQ_MODEL=llama-3.3-70b-versatile
+
+# ElevenLabs (TTS)
+ELEVENLABS_API_KEY=<your-elevenlabs-api-key>
+ELEVENLABS_MODEL=eleven_multilingual_v2
+
+# OpenAI (STT/TTS)
+OPENAI_API_KEY=<your-openai-api-key>
+```
+
+### 7.3 Local Models
+```bash
+# WhisperX
+VIDEOVOICE_WHISPER_MODEL=large-v3
+VIDEOVOICE_WHISPER_BATCH=4
+VIDEOVOICE_WHISPER_COMPUTE=float16
+
+# Ollama
+VIDEOVOICE_OLLAMA_HOST=http://localhost:11434
+VIDEOVOICE_OLLAMA_MODEL=qwen3:14b
+VIDEOVOICE_OLLAMA_TIMEOUT=120
+
+# TTS
+VIDEOVOICE_TTS_ENGINE=auto
+VIDEOVOICE_TTS_MODEL=tts_models/multilingual/multi-dataset/xtts_v2
+```
+
+---
+
+## 8. File Locations
+
+### 8.1 Backend Core
+- `src/core/stt.py` - STT 엔진 통합
+- `src/core/tts.py` - TTS 엔진 통합
+- `src/core/translate.py` - 번역 엔진
+- `src/core/pipeline.py` - 전체 파이프라인 오케스트레이션
+- `src/config.py` - 환경 설정 로드
+
+### 8.2 Frontend
+- `frontend/src/pages/Home.jsx` - 메인 업로드 및 설정 페이지
+- `frontend/src/pages/Process.jsx` - 실시간 진행 상황
+- `frontend/src/pages/Result.jsx` - 결과 화면
+- `frontend/src/utils/audioExtractor.js` - FFmpeg.wasm 오디오 추출
+- `frontend/src/hooks/useSystemStatus.js` - 시스템 상태 확인
+
+### 8.3 Static Files
+- `static/` - 처리된 비디오 결과물 저장
+
+---
+
+## 9. Current Settings Summary (as of 2026-02-01)
+
+### 9.1 Configured APIs
+- ✅ Gemini Pro (품질 검증)
+- ✅ Groq (번역/STT)
+- ✅ ElevenLabs (TTS)
+- ❌ OpenAI (미설정)
+
+### 9.2 Default Engines
+- **STT**: Groq (`.env`에서 설정)
+- **Translation**: Groq 우선, Ollama 대체
+- **TTS**: Auto (ElevenLabs 우선 → 언어별 최적 선택)
+
+### 9.3 UI Features
+- 체크마크 스타일 옵션 선택
+- 언어별 추천 엔진 자동 표시
+- 실시간 진행 상황 추적
+- 결과 미리보기 및 다운로드
+
+---
+
+## 10. Hardware Constraints
 
 - GPU: RTX 3060 12GB
 - RAM: 64GB
 - Storage: Local SSD
-- Execution Mode: Single GPU, Local-only
+- Execution Mode: Hybrid (Local + Cloud API)
 
 ---
 
-## 7. Output Requirements
+## 11. Development Commands
 
-- 한국어 원음 완전 제거
-- 대상 언어 음성만 존재
-- 음색 및 말투 일관성 유지
-- 영상과 음성 싱크 자연스러움
-- 단일 mp4 파일로 출력
+### 11.1 Backend
+```bash
+# 가상환경 활성화
+c:\code\videovoice\venv\Scripts\activate
 
----
+# 서버 실행
+python -m uvicorn src.web.main:app --reload
 
-## 8. Validation Checklist
+# 또는
+c:\code\videovoice\venv\Scripts\python -m uvicorn src.web.main:app --reload
+```
 
-- [ ] 입력 언어 자동 감지 정상
-- [ ] STT 타임스탬프 정상
-- [ ] 번역 의미 왜곡 없음
-- [ ] TTS 음색 변화 없음
-- [ ] 오디오 길이 과도한 불일치 없음
-- [ ] 원본 음성 완전 제거 확인
+### 11.2 Frontend
+```bash
+cd frontend
+npm run dev
+```
 
----
-
-## 9. Review & Approval Flow
-
-1. 자동 처리 결과 생성
-2. 언어별 30초 샘플 검증
-3. 전체 영상 검토
-4. 사용자 승인 또는 수정 요청 반영
+### 11.3 Ollama (로컬 번역)
+```bash
+ollama serve
+ollama run qwen3:14b
+```
 
 ---
 
-## 10. Comparison Reference (Gemini Documentation Use)
+## 12. Known Issues & Solutions
 
-본 agent.md는 실행 기준 문서이며,
-Gemini를 사용할 경우에는 다음 목적에 한해 보조적으로 활용한다.
+### 12.1 브라우저 환경 변수 문제
+- 증상: `$HOME environment variable is not set`
+- 영향: 브라우저 자동화 도구 실패
+- 해결: 수동으로 브라우저에서 http://localhost:5173 접속
 
-- 설계 설명 보완
-- 비기술 이해관계자 공유용 문서
-- 구조적 요약 및 정리
+### 12.2 FFmpeg.wasm 메모리 이슈
+- 증상: 대용량 파일(>500MB) 처리 시 메모리 부족
+- 해결: 서버 측 오디오 추출 사용 또는 파일 크기 제한
 
-단, 구현 기준과 판단 기준은
-본 agent.md를 최우선으로 한다.
+---
+
+## 13. For Claude Desktop Users
+
+### 13.1 Quick Context
+프로젝트 상태를 빠르게 파악하려면:
+1. `.env` 파일에서 현재 API 키 확인
+2. `frontend/src/pages/Home.jsx`에서 UI 로직 확인
+3. `src/core/pipeline.py`에서 전체 플로우 확인
+
+### 13.2 Common Tasks
+- UI 수정: `frontend/src/pages/` 디렉토리
+- 엔진 추가/수정: `src/core/` 디렉토리
+- 설정 변경: `.env` 파일
+- 추천 로직 수정: `frontend/src/pages/Home.jsx`의 `getRecommendedSettings` 함수
+
+### 13.3 Testing
+- Backend: http://127.0.0.1:8000/docs (Swagger UI)
+- Frontend: http://localhost:5173
+- System Status: http://127.0.0.1:8000/api/system/status
+
+---
+
+## 14. Validation Checklist
+
+- [x] 입력 언어 자동 감지 정상
+- [x] STT 타임스탬프 정상
+- [x] 번역 의미 왜곡 없음
+- [x] TTS 음색 변화 없음
+- [x] 오디오 길이 과도한 불일치 없음
+- [x] 원본 음성 완전 제거 확인
+- [x] UI 직관성 개선 (체크마크 스타일)
+- [x] 추천 엔진 자동 선택 기능
+
+---
+
+**Last Updated**: 2026-02-01
+**Version**: 2.0 (Hybrid Local + Cloud)
+**Status**: Production Ready

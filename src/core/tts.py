@@ -229,22 +229,34 @@ class TTSModule:
         # If speaker_wav is provided, use voice cloning via add voice
         if speaker_wav and os.path.isfile(speaker_wav):
             print(f"ElevenLabs TTS: Cloning voice from {speaker_wav}...")
-            voice = client.clone(
-                name="videovoice_clone",
-                files=[speaker_wav],
-                description="Cloned voice for dubbing",
-            )
-            voice_id = voice.voice_id
+            # Use 'ivc.create' method for Instant Voice Cloning in newer SDK versions
+            import time
+            # We must open the file in binary mode
+            try:
+                with open(speaker_wav, "rb") as audio_file:
+                    voice = client.voices.ivc.create(
+                        name=f"videovoice_clone_{int(time.time())}",
+                        files=[audio_file],
+                        description="Cloned voice for dubbing",
+                    )
+                voice_id = voice.voice_id
+            except Exception as e:
+                print(f"ElevenLabs Cloning Failed: {e}")
+                if hasattr(e, 'body'):
+                    print(f"Error Body: {e.body}")
+                print("Falling back to default voice due to cloning error.")
+                voice_id = "21m00Tcm4TlvDq8ikWAM"
         else:
             # Use default voice
             voice_id = "21m00Tcm4TlvDq8ikWAM"  # Rachel
             print(f"ElevenLabs TTS: Using default voice...")
 
         print(f"ElevenLabs TTS: Generating for language '{language}'...")
-        audio = client.generate(
+        # Use 'text_to_speech.convert' method in newer SDK versions
+        audio = client.text_to_speech.convert(
             text=text,
-            voice=voice_id,
-            model=ELEVENLABS_MODEL,
+            voice_id=voice_id,
+            model_id=ELEVENLABS_MODEL,
         )
 
         # audio is a generator of bytes

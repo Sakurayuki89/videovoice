@@ -42,7 +42,11 @@ MAX_FILE_SIZE = int(os.environ.get("VIDEOVOICE_MAX_FILE_SIZE", str(500 * 1024 * 
 ALLOWED_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm"}
 
 # Supported Languages
-ALLOWED_LANGUAGES = {"auto", "en", "ko", "ja", "ru", "zh", "es", "fr", "de"}
+ALLOWED_LANGUAGES = {
+    "auto", "en", "ko", "ja", "zh", "ru",
+    "es", "fr", "de", "it", "pt", "nl",
+    "pl", "tr", "vi", "th", "ar", "hi",
+}
 
 # Job Manager Configuration
 MAX_JOBS = int(os.environ.get("VIDEOVOICE_MAX_JOBS", "1000"))
@@ -95,7 +99,7 @@ EDGE_TTS_VOICES = {
 # TTS auto-select map: language -> best engine when clone_voice is OFF
 TTS_AUTO_SELECT = {
     "ko": "edge",
-    "ru": "edge",
+    "ru": "silero",
     "en": "xtts",
     "ja": "xtts",
     "zh": "edge",

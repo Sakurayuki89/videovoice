@@ -4,7 +4,24 @@
       "Bash(tree:*)",
       "Bash(python tests/pipeline_verify.py:*)",
       "Bash(C:\\\\code\\\\videovoice\\\\venv\\\\Scripts\\\\python.exe:*)",
-      "Bash(./venv/Scripts/python.exe:*)"
+      "Bash(./venv/Scripts/python.exe:*)",
+      "Bash(dir:*)",
+      "Bash(ffmpeg:*)",
+      "Bash(npm install:*)",
+      "Bash(curl:*)",
+      "Bash(venv\\\\Scripts\\\\python.exe:*)",
+      "Bash(C:codevideovoicevenvScriptspython.exe -c \"from dotenv import load_dotenv; load_dotenv\\(''.env''\\); import os; key = os.environ.get\\(''GEMINI_API_KEY'', ''''\\); print\\(''GEMINI_API_KEY:'', key[:20] + ''...'' if key else ''NOT SET''\\)\")",
+      "Bash(./venv/Scripts/pip.exe install:*)",
+      "Bash(venv/Scripts/python.exe -m pip install:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push)",
+      "Bash(python scripts/start_app.py:*)",
+      "Bash(set PYTHONIOENCODING=utf-8)",
+      "Bash(python -m uvicorn:*)",
+      "Bash(venvScriptspip install edge-tts)",
+      "Bash(python:*)",
+      "Bash(pip install:*)"
     ]
   }
 }

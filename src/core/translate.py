@@ -1,16 +1,15 @@
 import requests
 import time
 import re
-import os
 
-# Default configuration (can be overridden by environment variables)
-DEFAULT_OLLAMA_HOST = os.environ.get("VIDEOVOICE_OLLAMA_HOST", "http://localhost:11434")
-DEFAULT_OLLAMA_MODEL = os.environ.get("VIDEOVOICE_OLLAMA_MODEL", "qwen3:14b")
-DEFAULT_OLLAMA_TIMEOUT = int(os.environ.get("VIDEOVOICE_OLLAMA_TIMEOUT", "120"))
+from ..config import (
+    OLLAMA_HOST as DEFAULT_OLLAMA_HOST,
+    OLLAMA_MODEL as DEFAULT_OLLAMA_MODEL,
+    OLLAMA_TIMEOUT as DEFAULT_OLLAMA_TIMEOUT,
+    GROQ_API_KEY,
+    GROQ_MODEL,
+)
 
-# Groq API configuration
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Full language name mapping
@@ -97,7 +96,7 @@ class Translator:
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],
-                "temperature": 0.3
+                "temperature": 0.4
             },
             timeout=self.timeout
         )
@@ -136,6 +135,27 @@ class Translator:
             return self._call_groq(prompt)
         return self._call_ollama(prompt)
 
+    def _get_language_specific_instructions(self, target_lang: str, source_lang: str) -> str:
+        """Return language-specific translation instructions."""
+        instructions = []
+        if target_lang == "ko":
+            instructions.append("- Use natural spoken Korean (구어체). Maintain polite speech level (존댓말) unless the source is clearly casual.")
+            if source_lang == "ja":
+                instructions.append("- Preserve the honorific/politeness level from the Japanese source (경어 레벨 보존).")
+            elif source_lang == "ru":
+                instructions.append("- Translate Russian formal/informal register (ты/Вы) to matching Korean speech level (반말/존댓말).")
+        elif target_lang == "ru":
+            instructions.append("- Ensure correct grammatical case (격변화) and gender agreement (성별 일치) throughout.")
+            if source_lang == "ko":
+                instructions.append("- Map Korean speech levels (존댓말/반말) to appropriate Russian register (Вы/ты).")
+            elif source_lang == "ja":
+                instructions.append("- Map Japanese politeness levels (敬語/丁寧語/普通体) to appropriate Russian register (Вы/ты).")
+        elif target_lang == "ja":
+            instructions.append("- Use appropriate politeness level (敬語/丁寧語/普通体) matching the source tone.")
+            if source_lang == "ko":
+                instructions.append("- Map Korean speech levels (존댓말/반말) to matching Japanese politeness (丁寧語/普通体).")
+        return "\n".join(instructions)
+
     def translate(self, text: str, source_lang: str, target_lang: str, sync_mode: str = "optimize", engine: str = "local") -> str:
         if not text or not text.strip():
             return ""
@@ -152,29 +172,43 @@ class Translator:
         # Build prompt based on sync mode
         if sync_mode == "optimize":
             dubbing_constraint = """
-Dubbing Constraint: Translate to match the original speech duration.
-- Aim for a translation length that takes the same amount of time to speak as the original
-- Do NOT be overly concise; expand or rephrase if the translation is too short
-- Maintain natural flow and pacing similar to the original speech
-- Prioritize duration matching over word-for-word literalness"""
+Dubbing Constraint: CONCISE AND NATURAL.
+- Translate concisely. Do NOT add unnecessary filler, elaboration, or paraphrasing.
+- Preserve ALL original meaning and details — do not omit content.
+- Preserve the exact narrative perspective (1st person stays 1st person, 3rd stays 3rd).
+- Keep all medical and technical terms accurate."""
         else:
             # speed_audio and stretch both use full translation
             dubbing_constraint = """
-Translation Requirement: Provide a complete and accurate translation.
-- Preserve all information from the original text
-- Maintain natural expression in the target language
-- Do not abbreviate or omit any content"""
+Translation Requirement: FULL COMPLETENESS IS MANDATORY.
+- You are FORBIDDEN from summarizing or omitting ANY content.
+- Every single sentence, clause, and nuance from the source must be present.
+- Medical details, examples, and small talk must be preserved exactly.
+- Maintain the original narrative voice (Do not switch from "He said" to "I said").
+- Misinterpretation or omission of medical terms is a critical failure.
+- The goal is a rich, full translation that fills the audio track."""
+
+        lang_instructions = self._get_language_specific_instructions(target_lang, source_lang)
+        lang_block = f"\nLANGUAGE-SPECIFIC RULES:\n{lang_instructions}" if lang_instructions else ""
 
         # Use delimiter markers to clearly separate instruction from content
-        prompt = f"""Translate the following {s_name} text to {t_name} for a video dubbing script.
+        prompt = f"""You are a professional video translator and dubbing scriptwriter.
+Your task is to translate {s_name} text to {t_name} for a video dubbing script.
+
 {dubbing_constraint}
 
-Output ONLY the translated text without any explanation or additional commentary.
+CRITICAL RULES:
+1. NO OMISSIONS: Do not summarize. Translate every single detail.
+2. NO HALLUCINATIONS: Do not add facts not present in the text.
+3. NARRATIVE VOICE: Keep the original speaker's perspective (I -> I, He -> He).
+4. TONE: Match the original speaker's tone (Medical/Professional/Casual).
+{lang_block}
 
 <content_to_translate>
 {sanitized_text}
 </content_to_translate>
 
+Output ONLY the translated text without any explanation or additional commentary.
 Translation:"""
         
         max_retries = 3
@@ -207,9 +241,12 @@ Translation:"""
         issues_text = "\n".join(f"- {issue}" for issue in issues[:10])
 
         if sync_mode == "optimize":
-            dubbing_constraint = "Aim for a translation length that matches the original speech duration."
+            dubbing_constraint = "Translate concisely without unnecessary filler. Preserve all original meaning."
         else:
-            dubbing_constraint = "Provide a complete and accurate translation without omitting content."
+            dubbing_constraint = "Provide a complete and accurate translation without omitting any content."
+
+        lang_instructions = self._get_language_specific_instructions(target_lang, source_lang)
+        lang_block = f"\nLANGUAGE-SPECIFIC RULES:\n{lang_instructions}" if lang_instructions else ""
 
         prompt = f"""You are refining a {s_name} to {t_name} translation for video dubbing.
 
@@ -217,6 +254,19 @@ The previous translation had these quality issues:
 {issues_text}
 
 {dubbing_constraint}
+
+REFINEMENT GUIDE:
+- If the issue is about accuracy: fix mistranslations, restore omitted content.
+- If the issue is about naturalness: rephrase to sound native, fix awkward phrasing.
+- If the issue is about dubbing fit: adjust length without losing meaning.
+- If the issue is about consistency: unify terminology, tone, and style.
+
+CRITICAL RULES:
+1. NO OMISSIONS: Do not summarize. Translate every single detail.
+2. NO HALLUCINATIONS: Do not add facts not present in the original.
+3. NARRATIVE VOICE: Keep the original speaker's perspective (I -> I, He -> He).
+4. TONE: Match the original speaker's tone.
+{lang_block}
 
 Original ({s_name}):
 <content_to_translate>

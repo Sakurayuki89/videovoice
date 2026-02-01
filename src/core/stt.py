@@ -175,6 +175,15 @@ class STTModule:
         if not GROQ_API_KEY:
             raise RuntimeError("GROQ_API_KEY is not set. Required for Groq STT engine.")
 
+        # Groq API has a 25MB file size limit
+        file_size = os.path.getsize(audio_path)
+        max_groq_size = 25 * 1024 * 1024  # 25MB
+        if file_size > max_groq_size:
+            raise RuntimeError(
+                f"Audio file too large for Groq API ({file_size // (1024*1024)}MB). "
+                f"Maximum: 25MB. Use 'local' STT engine for large files."
+            )
+
         from groq import Groq
         client = Groq(api_key=GROQ_API_KEY)
 
