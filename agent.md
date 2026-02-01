@@ -51,7 +51,7 @@ Audio Track Replacement(음성 트랙 교체) 방식을 사용한다.
 - **Location**: `src/web/main.py`, `src/web/routes.py`
 - **Job Manager**: `src/web/manager.py` - 비동기 작업 관리
 - **Port**: 8000 (기본값)
-- **CORS**: http://localhost:5173, http://127.0.0.1:5173
+- **CORS**: 5173/5174 자동 포함 + `.env` CORS_ORIGINS 병합
 
 ### 3.2 Frontend (React + Vite)
 - **Framework**: React 19.2.0
@@ -69,6 +69,8 @@ Audio Track Replacement(음성 트랙 교체) 방식을 사용한다.
 - ✅ 옵션 간 명확한 경계선(border-2) 추가
 - ✅ 추천 설정 자동 적용 시스템 (언어 쌍 기반)
 - ✅ 표 형식 레이아웃으로 정렬 개선
+- ✅ 음성 추출 없이 바로 더빙 시작 가능 (서버 측 추출)
+- ✅ 크로스 오리진 다운로드/재생 수정 (FileResponse + blob URL)
 
 ---
 
@@ -105,6 +107,13 @@ Audio Track Replacement(음성 트랙 교체) 방식을 사용한다.
   - 무료
 
 #### Cloud Options
+- **Gemini 2.5 Flash** ⭐ 기본 추천
+  - 최고 품질 다국어 번역
+  - API 키: `.env`의 `GEMINI_API_KEY` 참조
+  - 429 에러 시 Groq 자동 폴백
+  - 청크 단위 번역 (400자 타겟)
+  - Few-shot 예시 포함 (KO/EN/RU)
+
 - **Groq API**
   - llama-3.3-70b-versatile
   - 초고속 번역
@@ -149,6 +158,13 @@ Audio Track Replacement(음성 트랙 교체) 방식을 사용한다.
 - **Gemini 2.5 Flash**
   - API 키: `.env`의 `GEMINI_API_KEY` 참조
   - 용도: 번역 품질 검증 (verify_translation 옵션)
+  - **4단계 신뢰성 시스템**:
+    1. 2회 평가 평균 (temperature 0.1, 점수 분산 ±2~3%)
+    2. 리파인 전후 핵심 용어 보존율 체크 (숫자/고유명사 30%+ 소실 시 거부)
+    3. 엄격한 채점 기준 (가중치 공식 명시, 불완전 문장 패널티)
+    4. 잘린 JSON 자동 복구 (Gemini 출력 truncation 대응)
+  - **품질 게이트**: 85% 최소 기준, 3라운드 번역→평가→리파인 루프
+  - **비용**: 약 30~40원/10분 영상 (2회 평가 포함)
 
 ---
 
@@ -163,11 +179,16 @@ Audio Track Replacement(음성 트랙 교체) 방식을 사용한다.
    - Local: WhisperX large-v3
    - Cloud: Groq, OpenAI
    ↓
-4. 문장 단위 번역
+4. 청크 단위 번역 (400자 타겟)
    - Local: Ollama + Qwen3
-   - Cloud: Groq API
+   - Cloud: Gemini 2.5 Flash (기본), Groq API
+   - Few-shot 예시 포함
+   - 429 에러 시 Gemini → Groq 자동 폴백
    ↓
-5. (선택) 품질 검증 (Gemini)
+5. (선택) 4단계 품질 검증 (Gemini)
+   - 2회 평가 평균 (temperature 0.1)
+   - 85% 미달 시 청크 단위 리파인 → 재평가 (최대 3라운드)
+   - 핵심 용어 보존율 체크
    ↓
 6. TTS (텍스트 → 음성)
    - Local: XTTS, Edge TTS, Silero
@@ -260,8 +281,10 @@ VIDEOVOICE_TTS_MODEL=tts_models/multilingual/multi-dataset/xtts_v2
 ### 8.1 Backend Core
 - `src/core/stt.py` - STT 엔진 통합
 - `src/core/tts.py` - TTS 엔진 통합
-- `src/core/translate.py` - 번역 엔진
-- `src/core/pipeline.py` - 전체 파이프라인 오케스트레이션
+- `src/core/translate.py` - 번역 엔진 (Gemini/Groq/Ollama, 청크 번역/리파인)
+- `src/core/quality.py` - 번역 품질 검증 (2회 평가 평균, 잘린 JSON 복구)
+- `src/core/pipeline.py` - 전체 파이프라인 오케스트레이션 (품질 게이트, 용어 보존 체크)
+- `src/core/translation_cache.py` - 번역 캐시 (품질 점수 포함, 저품질 무효화)
 - `src/config.py` - 환경 설정 로드
 
 ### 8.2 Frontend
@@ -286,8 +309,9 @@ VIDEOVOICE_TTS_MODEL=tts_models/multilingual/multi-dataset/xtts_v2
 
 ### 9.2 Default Engines
 - **STT**: Groq (`.env`에서 설정)
-- **Translation**: Groq 우선, Ollama 대체
+- **Translation**: Gemini 2.5 Flash 우선 (429 시 Groq 폴백), Ollama 대체
 - **TTS**: Auto (ElevenLabs 우선 → 언어별 최적 선택)
+- **Quality**: Gemini 2.5 Flash (2회 평가 평균, 85% 게이트)
 
 ### 9.3 UI Features
 - 체크마크 스타일 옵션 선택
@@ -381,6 +405,40 @@ ollama run qwen3:14b
 
 ---
 
+---
+
+## 15. Backup & Restore Points
+
+### v1.0-stable (2026-02-01) ⭐ 완성본 백업
+- **커밋**: `bb0691c`
+- **태그**: `v1.0-stable`
+- **내용**: Gemini 번역 + 4단계 품질 신뢰성 시스템
+- **품질 결과**: KO→RU 의학 콘텐츠 10분 영상 88% (정확도 90%, 자연스러움 88%, 더빙 적합성 85%, 일관성 92%)
+- **주요 기능**:
+  - Gemini 2.5 Flash 번역 (Groq 자동 폴백)
+  - 청크 단위 번역/리파인 (400자 타겟)
+  - 2회 평가 평균 (temperature 0.1)
+  - 핵심 용어 보존율 체크
+  - 잘린 JSON 자동 복구
+  - 85% 품질 게이트 (3라운드)
+  - Few-shot 번역 예시
+  - 크로스 오리진 다운로드/재생 수정
+  - CORS 동적 포트 지원
+
+**복원 명령어:**
+```bash
+# 이 버전으로 복원 (읽기 전용)
+git checkout v1.0-stable
+
+# 현재 브랜치를 이 시점으로 되돌리기
+git reset --hard v1.0-stable
+
+# 태그 목록 확인
+git tag -l
+```
+
+---
+
 **Last Updated**: 2026-02-01
-**Version**: 2.0 (Hybrid Local + Cloud)
-**Status**: Production Ready
+**Version**: 2.1 (Gemini Translation + Quality Reliability System)
+**Status**: Production Ready - Stable Backup v1.0
