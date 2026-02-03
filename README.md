@@ -56,7 +56,7 @@ AI 기반 로컬 비디오 **더빙** 및 **자막 생성** 시스템입니다. 
 
 ---
 
-## 🖥️ 실행 방법
+## 🖥️ 실행 방법 (Windows)
 
 ### 간편 실행 (권장)
 ```powershell
@@ -74,6 +74,47 @@ venv\Scripts\python -m uvicorn src.web.main:app --reload --host 0.0.0.0 --port 8
 
 # 터미널 2: 프론트엔드
 cd frontend && npm run dev -- --host
+```
+
+---
+
+## 🍎 실행 방법 (macOS / Linux)
+
+macOS(Apple Silicon M1/M2/M3 등)에서도 로컬 서버를 통해 쾌적하게 사용할 수 있습니다.
+
+### 1. 필수 도구 설치
+터미널에서 **Homebrew**를 사용하여 필수 패키지를 설치합니다.
+```bash
+# Python, Node.js, FFmpeg(필수) 설치
+brew install python3 node ffmpeg
+```
+
+### 2. 프로젝트 설정 (최초 1회)
+```bash
+# 백엔드 라이브러리 설치
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 프론트엔드 라이브러리 설치
+cd frontend
+npm install
+cd ..
+```
+
+### 3. 서버 실행
+터미널 2개를 열어 각각 실행합니다.
+
+**터미널 1 (백엔드 서버)**
+```bash
+source venv/bin/activate
+python src/web/main.py
+```
+
+**터미널 2 (웹 화면)**
+```bash
+cd frontend
+npm run dev
 ```
 
 ### 접속
