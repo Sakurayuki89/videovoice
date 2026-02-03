@@ -5,8 +5,12 @@ import json
 
 
 class FFmpegModule:
-    # Timeout for FFmpeg operations (10 minutes)
-    TIMEOUT_SECONDS = 600
+    # Timeout for FFmpeg operations - loaded from config
+    try:
+        from ..config import FFMPEG_TIMEOUT
+        TIMEOUT_SECONDS = FFMPEG_TIMEOUT
+    except ImportError:
+        TIMEOUT_SECONDS = 1800  # 30 minutes fallback
 
     def get_media_duration(self, file_path: str) -> float:
         """Get duration of media file in seconds using ffprobe."""
@@ -152,6 +156,12 @@ class FFmpegModule:
 
         video_duration = self.get_media_duration(video_path)
         audio_duration = self.get_media_duration(audio_path)
+
+        # #10 Fix: Check for zero duration to prevent empty output files
+        if video_duration <= 0:
+            print(f"FFmpeg Merge Failed: Invalid video duration ({video_duration}s)")
+            return False
+
         print(f"Optimize merge - Video: {video_duration:.2f}s, Audio: {audio_duration:.2f}s")
 
         # Use audio filter to pad with silence or trim to match video duration

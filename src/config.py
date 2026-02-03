@@ -74,7 +74,7 @@ ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2")
 
 # STT Engine
-STT_ENGINE = os.environ.get("VIDEOVOICE_STT_ENGINE", "local")  # local, groq, openai
+STT_ENGINE = os.environ.get("VIDEOVOICE_STT_ENGINE", "local")  # local, groq, openai, gemini
 
 # Gemini API (for translation quality validation)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -87,7 +87,7 @@ TTS_ENGINE = os.environ.get("VIDEOVOICE_TTS_ENGINE", "auto")  # auto, xtts, edge
 # Edge TTS Voice Map (Microsoft Neural voices)
 EDGE_TTS_VOICES = {
     "ko": os.environ.get("EDGE_TTS_VOICE_KO", "ko-KR-SunHiNeural"),
-    "ru": os.environ.get("EDGE_TTS_VOICE_RU", "ru-RU-SvetlanaNeural"),
+    "ru": os.environ.get("EDGE_TTS_VOICE_RU", "ru-RU-DmitryNeural"),
     "en": os.environ.get("EDGE_TTS_VOICE_EN", "en-US-AriaNeural"),
     "ja": os.environ.get("EDGE_TTS_VOICE_JA", "ja-JP-NanamiNeural"),
     "zh": os.environ.get("EDGE_TTS_VOICE_ZH", "zh-CN-XiaoxiaoNeural"),
@@ -109,8 +109,23 @@ TTS_AUTO_SELECT = {
 }
 
 # FFmpeg Configuration
-FFMPEG_TIMEOUT = int(os.environ.get("VIDEOVOICE_FFMPEG_TIMEOUT", "600"))  # 10 minutes
-STT_TIMEOUT = int(os.environ.get("VIDEOVOICE_STT_TIMEOUT", "300"))  # 5 minutes
+FFMPEG_TIMEOUT = int(os.environ.get("VIDEOVOICE_FFMPEG_TIMEOUT", "1800"))  # 30 minutes
+STT_TIMEOUT = int(os.environ.get("VIDEOVOICE_STT_TIMEOUT", "600"))  # 10 minutes
+TRANSLATION_TIMEOUT = int(os.environ.get("VIDEOVOICE_TRANSLATION_TIMEOUT", "1800"))  # 30 minutes (match FFmpeg)
+QUALITY_EVAL_TIMEOUT = int(os.environ.get("VIDEOVOICE_QUALITY_TIMEOUT", "120"))  # 2 minutes per evaluation
+
+# Subtitle translation quality gate
+SUBTITLE_MIN_SUCCESS_RATE = int(os.environ.get("VIDEOVOICE_SUBTITLE_MIN_SUCCESS_RATE", "90"))
+# #5 Fix: Configurable batch success threshold (0-100), below this triggers individual translation
+SUBTITLE_BATCH_THRESHOLD = int(os.environ.get("VIDEOVOICE_SUBTITLE_BATCH_THRESHOLD", "60"))
+# Subtitle batch chunk size (segments per LLM call)
+SUBTITLE_CHUNK_SIZE = int(os.environ.get("VIDEOVOICE_SUBTITLE_CHUNK_SIZE", "10"))
+
+# Quality Validation
+QUALITY_MAX_TEXT_LENGTH = int(os.environ.get("VIDEOVOICE_QUALITY_MAX_TEXT", "10000"))  # Max chars for quality eval
+
+# Rate Limiting
+RATE_LIMIT_CLEANUP_THRESHOLD = int(os.environ.get("VIDEOVOICE_RATE_LIMIT_CLEANUP", "100"))  # Cleanup when IPs exceed this
 
 # Translation Cache
 CACHE_DIR = STATIC_DIR / "cache" / "translations"

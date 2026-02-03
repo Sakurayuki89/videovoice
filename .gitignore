@@ -42,3 +42,10 @@ logs/
 tools/ffmpeq/
 tools/ffmpeg/
 *.exe
+
+# Static generated files
+static/uploads/
+static/outputs/
+static/cache/
+static/jobs.json
+static/jobs.json.tmp

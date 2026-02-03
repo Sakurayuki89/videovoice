@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Languages, Mic2, ShieldCheck, ArrowRight, Loader2, AlertCircle, Music, CheckCircle2, Check, Film, Clock, Gauge, Settings, ChevronDown, ChevronUp } from 'lucide-react';
+import { Upload, Languages, Mic2, ShieldCheck, ArrowRight, Loader2, AlertCircle, Music, CheckCircle2, Check, Film, Clock, Gauge, Settings, ChevronDown, ChevronUp, Subtitles } from 'lucide-react';
 import { createJob } from '../services/api';
 import {
     MAX_FILE_SIZE,
@@ -36,6 +36,7 @@ export default function Home() {
     const [extractedAudio, setExtractedAudio] = useState(null);
 
     const [settings, setSettings] = useState({
+        mode: 'dubbing', // 'dubbing' | 'subtitle'
         sourceLang: 'auto',
         targetLang: 'ko',
         cloneVoice: true,
@@ -111,12 +112,17 @@ export default function Home() {
         }
 
         // 소스 언어별 STT 최적화
-        if (['ja', 'zh', 'ko'].includes(sourceLang) || sourceLang === 'auto') {
-            rec.sttEngine = 'local';
-            rec.sttReason = 'Whisper large-v3 최고 정확도';
-        } else if (['en', 'ru'].includes(sourceLang)) {
+        const hasGemini = systemStatus?.api_status?.gemini === 'configured';
+        const hasGroq = systemStatus?.api_status?.groq === 'configured';
+        if (hasGemini) {
+            rec.sttEngine = 'gemini';
+            rec.sttReason = '빠르고 정확한 온라인 인식';
+        } else if (['en', 'ru'].includes(sourceLang) && hasGroq) {
             rec.sttEngine = 'groq';
             rec.sttReason = 'EN/RU 고속 인식';
+        } else {
+            rec.sttEngine = 'local';
+            rec.sttReason = 'Whisper large-v3 로컬 인식';
         }
 
         // verbose 타겟 언어
@@ -281,6 +287,7 @@ export default function Home() {
 
         const formData = new FormData();
         formData.append('file', fileToUpload);
+        formData.append('mode', settings.mode);
         formData.append('source_lang', settings.sourceLang);
         formData.append('target_lang', settings.targetLang);
         formData.append('clone_voice', settings.cloneVoice);
@@ -444,7 +451,9 @@ export default function Home() {
                             `}
                         >
                             {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <ArrowRight className="w-5 h-5" />}
-                            {isExtractionComplete ? '2. 더빙 시작하기' : '더빙 시작하기'}
+                            {settings.mode === 'subtitle'
+                                ? (isExtractionComplete ? '2. 자막 생성하기' : '자막 생성하기')
+                                : (isExtractionComplete ? '2. 더빙 시작하기' : '더빙 시작하기')}
                         </button>
                     </div>
                 </div>
@@ -455,7 +464,7 @@ export default function Home() {
                         <div className="flex items-center justify-between mb-6">
                             <h3 className="text-lg font-bold flex items-center gap-2 text-white">
                                 <Settings className="w-5 h-5 text-cyan-400" />
-                                더빙 설정
+                                {settings.mode === 'subtitle' ? '자막 설정' : '더빙 설정'}
                             </h3>
                             <button
                                 onClick={() => setShowAdvanced(!showAdvanced)}
@@ -467,6 +476,33 @@ export default function Home() {
                         </div>
 
                         <div className="space-y-6 flex-1">
+                            {/* Mode Toggle */}
+                            <div>
+                                <label className="block text-xs font-bold text-slate-400 uppercase mb-2 ml-1 tracking-wider">모드 선택</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {[
+                                        { id: 'dubbing', label: '더빙', icon: Mic2, desc: '음성 변환' },
+                                        { id: 'subtitle', label: '자막', icon: Subtitles, desc: '자막 삽입' }
+                                    ].map(m => {
+                                        const isActive = settings.mode === m.id;
+                                        return (
+                                            <button
+                                                key={m.id}
+                                                onClick={() => setSettings({ ...settings, mode: m.id })}
+                                                disabled={isSubmitting}
+                                                className={`flex items-center gap-2 p-3 rounded-xl border-2 transition-all text-left ${isActive ? 'bg-cyan-500/15 border-cyan-500 shadow-[0_0_20px_rgba(6,182,212,0.3)]' : 'bg-slate-800/40 border-slate-700 hover:border-slate-500'}`}
+                                            >
+                                                <m.icon className={`w-5 h-5 ${isActive ? 'text-cyan-400' : 'text-slate-500'}`} />
+                                                <div>
+                                                    <div className={`text-sm font-bold ${isActive ? 'text-white' : 'text-slate-300'}`}>{m.label}</div>
+                                                    <div className={`text-xs ${isActive ? 'text-cyan-400/70' : 'text-slate-500'}`}>{m.desc}</div>
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
                             {/* Languages */}
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
@@ -500,8 +536,8 @@ export default function Home() {
                                         </select>
                                         <ChevronDown className="absolute right-3 top-4 w-4 h-4 text-slate-400 group-hover:text-white transition-colors pointer-events-none" />
                                     </div>
-                                    {/* Recommended Settings Summary */}
-                                    <div className="mt-2 text-xs bg-emerald-500/10 px-3 py-2 rounded-lg border border-emerald-500/20">
+                                    {/* Recommended Settings Summary (dubbing only) */}
+                                    {settings.mode === 'dubbing' && <div className="mt-2 text-xs bg-emerald-500/10 px-3 py-2 rounded-lg border border-emerald-500/20">
                                         <div className="flex items-center gap-1.5 mb-2 text-emerald-400 font-bold">
                                             <span>💡</span> 추천 설정 자동 적용됨
                                         </div>
@@ -515,14 +551,15 @@ export default function Home() {
                                             <div className="text-right font-semibold text-emerald-300">싱크:</div>
                                             <div><strong className="text-emerald-300">{recommendation.syncName}</strong> — {recommendation.syncReason}</div>
                                         </div>
-                                    </div>
+                                    </div>}
                                 </div>
                             </div>
 
 
                             {/* Options */}
                             <div className="space-y-4 pt-2">
-                                <label className={`flex items-center gap-4 p-4 rounded-xl border-2 transition-all cursor-pointer relative overflow-hidden group ${settings.cloneVoice ? 'bg-cyan-500/10 border-cyan-500 shadow-[0_0_20px_rgba(6,182,212,0.2)]' : 'bg-slate-800/40 border-slate-700 hover:border-slate-500 hover:bg-slate-800'}`}>
+                                {/* 음성 복제 (더빙 전용) */}
+                                {settings.mode === 'dubbing' && <label className={`flex items-center gap-4 p-4 rounded-xl border-2 transition-all cursor-pointer relative overflow-hidden group ${settings.cloneVoice ? 'bg-cyan-500/10 border-cyan-500 shadow-[0_0_20px_rgba(6,182,212,0.2)]' : 'bg-slate-800/40 border-slate-700 hover:border-slate-500 hover:bg-slate-800'}`}>
                                     <div className={`w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all duration-300 ${settings.cloneVoice ? 'bg-cyan-500 border-cyan-500 scale-110 shadow-lg shadow-cyan-500/50' : 'border-slate-500 group-hover:border-cyan-400'}`}>
                                         <CheckCircle2 className={`w-4 h-4 text-white transition-transform ${settings.cloneVoice ? 'scale-100' : 'scale-0'}`} />
                                     </div>
@@ -542,8 +579,9 @@ export default function Home() {
                                             원본 화자의 목소리 톤과 특징을 AI가 분석하여 그대로 재현합니다.
                                         </p>
                                     </div>
-                                </label>
+                                </label>}
 
+                                {/* AI 번역 검증 (공통) */}
                                 <label className={`flex items-center gap-4 p-4 rounded-xl border-2 transition-all cursor-pointer relative overflow-hidden group ${settings.verifyTranslation ? 'bg-violet-500/10 border-violet-500 shadow-[0_0_20px_rgba(139,92,246,0.2)]' : 'bg-slate-800/40 border-slate-700 hover:border-slate-500 hover:bg-slate-800'}`}>
                                     <div className={`w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all duration-300 ${settings.verifyTranslation ? 'bg-violet-500 border-violet-500 scale-110 shadow-lg shadow-violet-500/50' : 'border-slate-500 group-hover:border-violet-400'}`}>
                                         <CheckCircle2 className={`w-4 h-4 text-white transition-transform ${settings.verifyTranslation ? 'scale-100' : 'scale-0'}`} />
@@ -570,8 +608,8 @@ export default function Home() {
                             {/* Advanced Settings */}
                             {showAdvanced && (
                                 <div className="space-y-8 pt-6 border-t border-slate-700/50 animate-fade-in mt-4">
-                                    {/* Sync Mode */}
-                                    <div>
+                                    {/* Sync Mode (dubbing only) */}
+                                    {settings.mode === 'dubbing' && <div>
                                         <label className="block text-xs font-bold text-slate-400 uppercase mb-3 tracking-wider flex items-center gap-2">
                                             <div className="w-1 h-4 bg-gradient-to-b from-cyan-500 to-violet-500 rounded-full"></div>
                                             싱크 및 속도 조절
@@ -613,10 +651,10 @@ export default function Home() {
                                                 );
                                             })}
                                         </div>
-                                    </div>
+                                    </div>}
 
-                                    {/* TTS Engine */}
-                                    <div>
+                                    {/* TTS Engine (dubbing only) */}
+                                    {settings.mode === 'dubbing' && <div>
                                         <label className="block text-xs font-bold text-slate-400 uppercase mb-3 tracking-wider flex items-center gap-2">
                                             <div className="w-1 h-4 bg-violet-500 rounded-full"></div>
                                             음성 합성 (TTS) 엔진
@@ -655,7 +693,7 @@ export default function Home() {
                                                 );
                                             })}
                                         </div>
-                                    </div>
+                                    </div>}
 
                                     {/* Translation & STT Engine Group */}
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -703,10 +741,11 @@ export default function Home() {
                                             </label>
                                             <div className="space-y-4">
                                                 {[
+                                                    { id: 'gemini', label: 'Gemini API', desc: '빠르고 정확 / 온라인' },
                                                     { id: 'groq', label: 'Groq API', desc: '초고속 / 온라인' },
-                                                    { id: 'local', label: 'Local (Whisper)', desc: 'GPU 필요' },
-                                                    { id: 'openai', label: 'OpenAI API', desc: '최고 정확도' }
-                                                ].map((engine, index) => (
+                                                    { id: 'openai', label: 'OpenAI API', desc: '최고 정확도' },
+                                                    { id: 'local', label: 'Local (Whisper)', desc: 'GPU 필요 / 느림' },
+                                                ].map((engine, index, arr) => (
                                                     <div key={engine.id}>
                                                         <label className={`flex items-center gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all group ${settings.sttEngine === engine.id ? 'bg-blue-500/15 border-blue-500 shadow-[0_0_25px_rgba(59,130,246,0.4)]' : 'bg-slate-800/50 border-slate-600 hover:border-slate-500 hover:bg-slate-800/70'}`}>
                                                             <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all duration-300 flex-shrink-0 ${settings.sttEngine === engine.id ? 'bg-blue-500 border-blue-500 scale-110 shadow-lg shadow-blue-500/50' : 'border-slate-500 group-hover:border-blue-400'}`}>
@@ -725,7 +764,7 @@ export default function Home() {
                                                                 <span className={`text-xs transition-colors ml-2 ${settings.sttEngine === engine.id ? 'text-yellow-200/80' : 'text-slate-500'}`}>— {engine.desc}</span>
                                                             </div>
                                                         </label>
-                                                        {index < 2 && <div className="border-t-2 border-slate-600 my-4"></div>}
+                                                        {index < arr.length - 1 && <div className="border-t-2 border-slate-600 my-4"></div>}
                                                     </div>
                                                 ))}
                                             </div>

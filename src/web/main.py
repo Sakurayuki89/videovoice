@@ -37,6 +37,17 @@ app.include_router(router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+@app.on_event("startup")
+async def startup_cleanup():
+    """Clean up expired jobs and orphan files on server startup."""
+    from .manager import job_manager
+    try:
+        expired = job_manager.cleanup_expired_jobs()
+        orphans = job_manager.cleanup_orphan_files()
+        print(f"[Startup] Cleaned {expired} expired jobs, {orphans['uploads']} orphan uploads, {orphans['outputs']} orphan outputs")
+    except Exception as e:
+        print(f"[Startup] Cleanup error: {e}")
+
 @app.get("/")
 async def root():
     return {"message": "VideoVoice API is running"}
@@ -61,6 +72,19 @@ async def get_elevenlabs_usage(api_key):
         return await asyncio.to_thread(_fetch)
     except Exception:
         return None
+
+@app.post("/api/system/cleanup")
+async def system_cleanup():
+    """Force cleanup of expired jobs and orphan files."""
+    from .manager import job_manager
+    expired = job_manager.cleanup_expired_jobs()
+    orphans = job_manager.cleanup_orphan_files()
+    return {
+        "expired_jobs_cleaned": expired,
+        "orphan_uploads_removed": orphans["uploads"],
+        "orphan_outputs_removed": orphans["outputs"],
+    }
+
 
 @app.get("/api/system/status")
 async def system_status():

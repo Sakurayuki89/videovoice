@@ -11,13 +11,9 @@ from ..config import (
     GEMINI_API_KEY,
     GEMINI_MODEL,
 )
+from .utils.llm import GeminiQuotaError, is_quota_error
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-
-class GeminiQuotaError(Exception):
-    """Raised when Gemini API returns 429 / quota exceeded."""
-    pass
 
 # Full language name mapping
 LANGUAGE_NAMES = {
@@ -90,7 +86,7 @@ class Translator:
     def _call_groq(self, prompt: str, system_prompt: str = None) -> str:
         """Call Groq API (OpenAI-compatible) and return the response text."""
         if not GROQ_API_KEY:
-            raise Exception("GROQ_API_KEY is not set. Please set it in your .env file.")
+            raise Exception("GROQ_API_KEY가 설정되지 않았습니다. .env 파일에 설정해주세요.")
 
         messages = []
         if system_prompt:
@@ -111,8 +107,11 @@ class Translator:
             timeout=self.timeout
         )
 
+        # #9 Fix: Handle Groq rate limit errors explicitly
+        if response.status_code == 429:
+            raise Exception(f"Groq API 요청 한도 초과 (429). 'local' 또는 'gemini' 엔진을 사용해보세요.")
         if response.status_code != 200:
-            raise Exception(f"Groq API error ({response.status_code}): {response.text}")
+            raise Exception(f"Groq API 오류 ({response.status_code}): {response.text}")
 
         data = response.json()
         content = data["choices"][0]["message"]["content"]
@@ -131,23 +130,23 @@ class Translator:
         )
 
         if response.status_code != 200:
-            raise Exception(f"Ollama error ({response.status_code}): {response.text}")
+            raise Exception(f"Ollama 오류 ({response.status_code}): {response.text}")
 
         raw = response.json().get('response', '')
         cleaned = self.strip_think_tags(raw)
         if not cleaned:
-            raise Exception("Ollama returned empty response")
+            raise Exception("Ollama가 빈 응답을 반환했습니다")
         return cleaned
 
     def _call_gemini(self, prompt: str, system_prompt: str = None) -> str:
         """Call Gemini API and return the response text. Raises GeminiQuotaError on 429."""
         if not GEMINI_API_KEY:
-            raise Exception("GEMINI_API_KEY is not set. Please set it in your .env file.")
+            raise Exception("GEMINI_API_KEY가 설정되지 않았습니다. .env 파일에 설정해주세요.")
 
         try:
             import google.generativeai as genai
         except ImportError:
-            raise Exception("google-generativeai package not installed. pip install google-generativeai")
+            raise Exception("google-generativeai 패키지가 설치되지 않았습니다. pip install google-generativeai")
 
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel(
@@ -162,13 +161,13 @@ class Translator:
                     temperature=0.3,
                     max_output_tokens=8192,
                 ),
+                request_options={"timeout": 60}
             )
             text = response.text
             return self.strip_think_tags(text).strip()
         except Exception as e:
-            error_str = str(e).lower()
-            if "429" in error_str or "resource exhausted" in error_str or "quota" in error_str:
-                raise GeminiQuotaError(f"Gemini API quota exceeded: {e}")
+            if is_quota_error(e):
+                raise GeminiQuotaError(f"Gemini API 할당량 초과: {e}")
             raise
 
     def _call_llm(self, prompt: str, engine: str = "local", system_prompt: str = None) -> str:
@@ -201,8 +200,9 @@ class Translator:
         return "\n".join(instructions)
 
     # Max characters per chunk for chunked translation
-    CHUNK_THRESHOLD = 600   # Split texts longer than this into chunks
-    CHUNK_TARGET_SIZE = 400  # Target size per chunk (prevents output truncation)
+    # Increased to prevent breaking subtitle batches and for modern LLM context windows
+    CHUNK_THRESHOLD = 8000   # Split texts longer than this into chunks (used for dubbing long scripts)
+    CHUNK_TARGET_SIZE = 6000 # Target size per chunk
 
     def _split_into_chunks(self, text: str) -> list[str]:
         """Split text into sentence-based chunks for better translation quality."""
@@ -305,6 +305,30 @@ RULES:
         else:
             return self._translate_chunk(sanitized_text, system_prompt, engine)
 
+    def translate_raw(self, user_text: str, system_prompt: str, engine: str = "local") -> str:
+        """Translate with explicit system prompt and user text (no wrapping).
+
+        Used by subtitle batch translation where the prompt structure is pre-built.
+        Auto-fallback from Gemini to Groq on quota error.
+        """
+        max_retries = 3
+        current_engine = engine
+        for attempt in range(1, max_retries + 1):
+            try:
+                result = self._call_llm(user_text, current_engine, system_prompt=system_prompt)
+                if result:
+                    return result
+            except GeminiQuotaError:
+                if GROQ_API_KEY:
+                    current_engine = "groq"
+                    continue
+                raise
+            except Exception as e:
+                print(f"translate_raw error (attempt {attempt}): {e}")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+        raise Exception("translate_raw가 재시도 후에도 실패했습니다")
+
     def _translate_chunk(self, text: str, system_prompt: str, engine: str) -> str:
         """Translate a single chunk of text. Auto-fallback from Gemini to Groq on quota error."""
         prompt = f"""Translate the following text:
@@ -338,7 +362,7 @@ Translation:"""
             if attempt < max_retries:
                 time.sleep(2 ** attempt)
 
-        raise Exception("Translation failed after retries")
+        raise Exception("번역이 재시도 후에도 실패했습니다")
 
     def _split_parallel_chunks(self, original: str, translated: str) -> list[tuple[str, str]]:
         """Split original and translated texts into aligned chunk pairs for refinement."""

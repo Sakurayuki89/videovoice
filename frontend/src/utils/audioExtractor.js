@@ -43,6 +43,17 @@ export async function initFFmpeg(onProgress = null) {
  * @returns {Promise<File>} 추출된 MP3 파일
  */
 export async function extractAudio(videoFile, onProgress = null, onStatus = null) {
+    // Fix: Terminate previous instance to prevent state corruption on second run
+    if (ffmpeg && loaded) {
+        try {
+            ffmpeg.terminate();
+        } catch (e) {
+            console.warn('FFmpeg terminate warning:', e);
+        }
+        ffmpeg = null;
+        loaded = false;
+    }
+
     // 1. FFmpeg 초기화
     if (onStatus) onStatus('FFmpeg 로딩 중...');
     const ff = await initFFmpeg(onProgress);
@@ -72,8 +83,12 @@ export async function extractAudio(videoFile, onProgress = null, onStatus = null
     const data = await ff.readFile(outputName);
 
     // 5. 파일 정리
-    await ff.deleteFile(inputName);
-    await ff.deleteFile(outputName);
+    try {
+        await ff.deleteFile(inputName);
+        await ff.deleteFile(outputName);
+    } catch (e) {
+        console.warn('FFmpeg cleanup warning:', e);
+    }
 
     // 6. File 객체로 변환
     const audioBlob = new Blob([data.buffer], { type: 'audio/mpeg' });

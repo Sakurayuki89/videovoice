@@ -3,7 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
     CheckCircle2, Loader2, AlertCircle, Terminal,
     FileAudio, FileText, Languages, Speech, Film, XCircle,
-    ChevronDown, ChevronUp, Clock, Hourglass, ArrowRight, Zap, Cloud
+    ChevronDown, ChevronUp, Clock, Hourglass, ArrowRight, Zap, Cloud,
+    Subtitles, Flame
 } from 'lucide-react';
 import { getJob, cancelJob } from '../services/api';
 import { useSystemStatus } from '../hooks/useSystemStatus';
@@ -17,7 +18,8 @@ export default function Process() {
     const navigate = useNavigate();
     const [job, setJob] = useState(null);
     const [error, setError] = useState(null);
-    const [retryCount, setRetryCount] = useState(0);
+    const retryCountRef = useRef(0);
+    const [pollKey, setPollKey] = useState(0); // bump to restart polling
     const [isCancelling, setIsCancelling] = useState(false);
     const [loadingTime, setLoadingTime] = useState(0);
     const [elapsedTime, setElapsedTime] = useState(0);
@@ -28,8 +30,15 @@ export default function Process() {
     // Fetch system status for API info
     const { status: systemStatus, isOnline } = useSystemStatus(true); // Always fetch on process page
 
-    // Steps configuration
-    const steps = [
+    // Steps configuration — changes based on mode
+    const isSubtitleMode = job?.settings?.mode === 'subtitle';
+    const steps = isSubtitleMode ? [
+        { key: 'extract', label: '오디오 추출', icon: FileAudio, desc: '영상에서 음성 분리' },
+        { key: 'transcribe', label: '음성 인식', icon: FileText, desc: '타임스탬프 포함 변환' },
+        { key: 'translate', label: 'AI 번역', icon: Languages, desc: '세그먼트별 번역' },
+        { key: 'subtitle', label: 'SRT 생성', icon: Subtitles, desc: '자막 파일 생성' },
+        { key: 'burn', label: '자막 삽입', icon: Flame, desc: '영상에 자막 하드코딩' },
+    ] : [
         { key: 'extract', label: '오디오 추출', icon: FileAudio, desc: '영상에서 음성 분리' },
         { key: 'transcribe', label: '음성 인식', icon: FileText, desc: '음성을 텍스트로 변환' },
         { key: 'translate', label: 'AI 번역', icon: Languages, desc: '다국어 번역 수행' },
@@ -71,10 +80,15 @@ export default function Process() {
         return () => clearInterval(timer);
     }, [job]);
 
-    // Status polling
+    // Status polling with backoff on errors
     useEffect(() => {
-        let intervalId;
+        let timeoutId;
         let isMounted = true;
+        retryCountRef.current = 0;
+
+        const schedule = (delay) => {
+            timeoutId = setTimeout(fetchStatus, delay);
+        };
 
         const fetchStatus = async () => {
             if (!isMounted) return;
@@ -83,16 +97,17 @@ export default function Process() {
                 if (!isMounted) return;
 
                 setJob(data);
-                setRetryCount(0);
+                retryCountRef.current = 0;
                 setError(null);
 
                 if (data.status === 'completed') {
-                    clearInterval(intervalId);
                     setTimeout(() => {
                         if (isMounted) navigate(`/result/${jobId}`);
-                    }, 1500); // Give user a moment to see 100%
+                    }, 1500);
                 } else if (data.status === 'failed' || data.status === 'cancelled') {
-                    clearInterval(intervalId);
+                    // Stop polling on terminal states
+                } else {
+                    schedule(POLL_INTERVAL);
                 }
             } catch (err) {
                 console.error(err);
@@ -100,23 +115,23 @@ export default function Process() {
 
                 if (err.message && (err.message.includes('not found') || err.message.includes('404'))) {
                     setError('작업을 찾을 수 없습니다. (서버가 재시작되었을 수 있습니다)');
-                    clearInterval(intervalId);
-                } else if (retryCount < MAX_RETRIES) {
-                    setRetryCount(prev => prev + 1);
+                } else if (retryCountRef.current < MAX_RETRIES) {
+                    retryCountRef.current += 1;
+                    // Backoff: 2s, 4s, 6s, 8s, ... up to 10s
+                    const backoff = Math.min(retryCountRef.current * POLL_INTERVAL, 10000);
+                    schedule(backoff);
                 } else {
-                    setError(err.message || "Failed to fetch job status");
-                    clearInterval(intervalId);
+                    setError('서버에 연결할 수 없습니다. 백엔드가 실행 중인지 확인해주세요.');
                 }
             }
         };
 
         fetchStatus();
-        intervalId = setInterval(fetchStatus, POLL_INTERVAL);
         return () => {
             isMounted = false;
-            clearInterval(intervalId);
+            clearTimeout(timeoutId);
         };
-    }, [jobId, navigate, retryCount]);
+    }, [jobId, navigate, pollKey]);
 
     // Auto-scroll logs
     useEffect(() => {
@@ -133,15 +148,21 @@ export default function Process() {
 
     const calculateETA = () => {
         if (!job || job.status !== 'processing') return null;
-        const progress = job.progress || 1;
+        const progress = job.progress || 0;
+
+        // Progress too low for meaningful estimation
+        if (progress <= 5) return '계산 중...';
         if (progress >= 100) return '완료됨';
 
         // Simple linear extrapolation
-        const estimatedTotal = (elapsedTime / progress) * 100;
-        const remaining = Math.max(0, estimatedTotal - elapsedTime);
+        const totalEstimatedTime = (elapsedTime / progress) * 100;
+        const remainingTime = Math.max(0, totalEstimatedTime - elapsedTime);
 
-        if (remaining < 60) return '곧 완료';
-        return `약 ${Math.ceil(remaining / 60)}분 남음`;
+        if (remainingTime < 30) return '곧 완료';
+        if (remainingTime < 60) return '약 1분 미만';
+
+        const mins = Math.ceil(remainingTime / 60);
+        return `약 ${mins}분 남음`;
     };
 
     const currentStepIndex = job ? steps.findIndex(s => s.key === job.current_step) : -1;
@@ -149,6 +170,7 @@ export default function Process() {
 
     // Check used APIs based on job settings
     const usesElevenLabs = job?.settings?.tts_engine === 'elevenlabs';
+    const usesGemini = job?.settings?.translation_engine === 'gemini' || job?.settings?.stt_engine === 'gemini';
     const usesGroq = job?.settings?.translation_engine === 'groq' || job?.settings?.stt_engine === 'groq';
     const usesOpenAI = job?.settings?.tts_engine === 'openai' || job?.settings?.stt_engine === 'openai';
 
@@ -164,7 +186,7 @@ export default function Process() {
                 </p>
                 <div className="flex gap-4">
                     <button
-                        onClick={() => { setError(null); setRetryCount(0); }}
+                        onClick={() => { setError(null); setPollKey(k => k + 1); }}
                         className="btn-secondary"
                     >
                         다시 시도
@@ -201,7 +223,7 @@ export default function Process() {
                 </div>
 
                 <h1 className="text-4xl md:text-5xl font-extrabold mb-4 bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-blue-500 to-violet-500">
-                    {job.status === 'processing' ? 'AI 더빙 작업 중' :
+                    {job.status === 'processing' ? (isSubtitleMode ? 'AI 자막 생성 중' : 'AI 더빙 작업 중') :
                         job.status === 'completed' ? '작업 완료!' :
                             job.status === 'failed' ? '작업 실패' : '대기 중'}
                 </h1>
@@ -274,7 +296,7 @@ export default function Process() {
                     </div>
 
                     {/* API Status Info (Only show if relevant APIs are used) */}
-                    {(usesElevenLabs || usesGroq || usesOpenAI) && systemStatus?.api_status && (
+                    {(usesElevenLabs || usesGemini || usesGroq || usesOpenAI) && systemStatus?.api_status && (
                         <>
                             <div className="w-full h-px bg-slate-700/50" />
                             <div className="space-y-3">
@@ -307,6 +329,20 @@ export default function Process() {
                                                     <span>{Math.max(0, Math.floor((systemStatus.api_status.elevenlabs_usage.limit - systemStatus.api_status.elevenlabs_usage.used) / 1000))}분 남음</span>
                                                 </div>
                                             </>
+                                        )}
+                                    </div>
+                                )}
+
+                                {usesGemini && (
+                                    <div className="flex items-center justify-between bg-slate-800/50 rounded-lg p-2.5 border border-slate-700/50">
+                                        <span className="text-xs text-white">Gemini API</span>
+                                        {systemStatus.api_status.gemini === 'configured' ? (
+                                            <div className="flex items-center gap-1.5">
+                                                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                                                <span className="text-[10px] text-emerald-400">정상</span>
+                                            </div>
+                                        ) : (
+                                            <span className="text-[10px] text-red-400">연결 끊김</span>
                                         )}
                                     </div>
                                 )}

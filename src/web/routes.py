@@ -8,10 +8,10 @@ import uuid
 import re
 import time
 from collections import defaultdict
-from .models import JobSettings, JobResponse, SyncMode, TranslationEngine, TTSEngine, STTEngine
+from .models import JobSettings, JobResponse, SyncMode, TranslationEngine, TTSEngine, STTEngine, JobMode
 from .manager import job_manager
 from ..core.pipeline import pipeline
-from ..config import STT_ENGINE  # Import default STT engine from config
+from ..config import STT_ENGINE, RATE_LIMIT_CLEANUP_THRESHOLD  # Import from config
 
 router = APIRouter(prefix="/api")
 
@@ -53,17 +53,39 @@ def check_rate_limit(request: Request) -> None:
     client_ip = get_client_ip(request)
     current_time = time.time()
 
-    # Clean old entries
+    # Clean old entries for this IP
     _rate_limit_store[client_ip] = [
         t for t in _rate_limit_store[client_ip]
         if current_time - t < RATE_LIMIT_WINDOW
     ]
 
+    # Proactive cleanup: Remove inactive IPs when threshold exceeded
+    # Uses configurable threshold (default 100) instead of hardcoded 1000
+    if len(_rate_limit_store) > RATE_LIMIT_CLEANUP_THRESHOLD:
+        inactive_ips = [
+            ip for ip, timestamps in _rate_limit_store.items()
+            if not timestamps or current_time - max(timestamps) > RATE_LIMIT_WINDOW * 5
+        ]
+        for ip in inactive_ips:
+            del _rate_limit_store[ip]
+
+        # If still over threshold after cleanup, remove oldest entries
+        if len(_rate_limit_store) > RATE_LIMIT_CLEANUP_THRESHOLD:
+            # Sort by most recent activity and keep only threshold count
+            sorted_ips = sorted(
+                _rate_limit_store.items(),
+                key=lambda x: max(x[1]) if x[1] else 0,
+                reverse=True
+            )
+            _rate_limit_store.clear()
+            for ip, timestamps in sorted_ips[:RATE_LIMIT_CLEANUP_THRESHOLD]:
+                _rate_limit_store[ip] = timestamps
+
     # Check limit
     if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
         raise HTTPException(
             status_code=429,
-            detail=f"Rate limit exceeded. Maximum {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW} seconds."
+            detail=f"요청 한도 초과. 최대 {RATE_LIMIT_REQUESTS}회/{RATE_LIMIT_WINDOW}초"
         )
 
     # Record request
@@ -134,13 +156,22 @@ async def create_job(
     sync_mode: str = Form("optimize"),
     translation_engine: str = Form("gemini"),  # Match frontend default
     tts_engine: str = Form("auto"),
-    stt_engine: str = Form(STT_ENGINE)  # Use config default here
+    stt_engine: str = Form(STT_ENGINE),  # Use config default here
+    mode: str = Form("dubbing")  # "dubbing" | "subtitle"
 ):
     # Rate limit check
     check_rate_limit(request)
 
+    # Validate mode
+    valid_modes = {"dubbing", "subtitle"}
+    if mode not in valid_modes:
+        raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}. Must be one of: {', '.join(valid_modes)}")
+
+    # Subtitle mode requires video input
+    # (validated later after file is saved)
+
     # Validate STT engine
-    valid_stt_engines = {"local", "groq", "openai"}
+    valid_stt_engines = {"local", "groq", "openai", "gemini"}
     if stt_engine not in valid_stt_engines:
         raise HTTPException(status_code=400, detail=f"Invalid stt_engine: {stt_engine}. Must be one of: {', '.join(valid_stt_engines)}")
 
@@ -165,10 +196,13 @@ async def create_job(
         missing_keys.append("GROQ_API_KEY (STT 엔진 Groq 사용시 필요)")
     if stt_engine == "openai" and not os.environ.get("OPENAI_API_KEY"):
         missing_keys.append("OPENAI_API_KEY (STT 엔진 OpenAI 사용시 필요)")
-    if tts_engine == "elevenlabs" and not os.environ.get("ELEVENLABS_API_KEY"):
-        missing_keys.append("ELEVENLABS_API_KEY (TTS 엔진 ElevenLabs 사용시 필요)")
-    if tts_engine == "openai" and not os.environ.get("OPENAI_API_KEY"):
-        missing_keys.append("OPENAI_API_KEY (TTS 엔진 OpenAI 사용시 필요)")
+    if stt_engine == "gemini" and not os.environ.get("GEMINI_API_KEY"):
+        missing_keys.append("GEMINI_API_KEY (STT 엔진 Gemini 사용시 필요)")
+    if mode != "subtitle":
+        if tts_engine == "elevenlabs" and not os.environ.get("ELEVENLABS_API_KEY"):
+            missing_keys.append("ELEVENLABS_API_KEY (TTS 엔진 ElevenLabs 사용시 필요)")
+        if tts_engine == "openai" and not os.environ.get("OPENAI_API_KEY"):
+            missing_keys.append("OPENAI_API_KEY (TTS 엔진 OpenAI 사용시 필요)")
     if verify_translation and not os.environ.get("GEMINI_API_KEY"):
         missing_keys.append("GEMINI_API_KEY (번역 검증 사용시 필요)")
     
@@ -239,17 +273,36 @@ async def create_job(
         sync_mode=SyncMode(sync_mode),
         translation_engine=TranslationEngine(translation_engine),
         tts_engine=TTSEngine(tts_engine),
-        stt_engine=STTEngine(stt_engine)
+        stt_engine=STTEngine(stt_engine),
+        mode=JobMode(mode)
     )
     
     # Detect if input is audio or video
     input_type = detect_input_type(file.filename)
-    
+
+    # #16 Fix: Validate that subtitle mode only accepts video input
+    if mode == "subtitle" and input_type == "audio":
+        os.remove(file_path)  # Clean up uploaded file
+        raise HTTPException(
+            status_code=400,
+            detail="자막 모드는 비디오 파일만 지원합니다. 오디오 파일은 더빙 모드를 사용하세요."
+        )
+
+    # #14 Fix: Reject new jobs when too many are already active
+    MAX_CONCURRENT_JOBS = int(os.environ.get("VIDEOVOICE_MAX_CONCURRENT_JOBS", "3"))
+    active_count = job_manager.get_active_job_count()
+    if active_count >= MAX_CONCURRENT_JOBS:
+        os.remove(file_path)  # Clean up uploaded file
+        raise HTTPException(
+            status_code=429,
+            detail=f"서버가 현재 {active_count}개의 작업을 처리 중입니다. 잠시 후 다시 시도해주세요. (최대 동시 작업: {MAX_CONCURRENT_JOBS})"
+        )
+
     job_id = job_manager.create_job(settings, file_path, input_type=input_type, original_filename=file.filename)
-    
+
     # Trigger pipeline
     background_tasks.add_task(pipeline.process_job, job_id)
-    
+
     return job_manager.get_job(job_id)
 
 def validate_job_id(job_id: str) -> str:
@@ -324,3 +377,38 @@ async def download_job_output(request: Request, job_id: str):
         filename=filename,
         media_type="application/octet-stream",
     )
+
+
+# #4 Fix: Add SRT download endpoint for subtitle mode
+@router.get("/jobs/{job_id}/srt", dependencies=[Depends(verify_api_key)])
+async def download_job_srt(request: Request, job_id: str):
+    """Download the SRT subtitle file for a completed subtitle job."""
+    check_rate_limit(request)
+    validated_id = validate_job_id(job_id)
+
+    job = job_manager.get_job(validated_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Check if this is a subtitle job
+    mode = getattr(job.settings, 'mode', None)
+    mode_value = mode.value if hasattr(mode, 'value') else mode
+    if mode_value != 'subtitle':
+        raise HTTPException(status_code=400, detail="SRT download is only available for subtitle mode jobs")
+
+    # Construct SRT file path
+    srt_path = os.path.join(OUTPUT_DIR, f"subtitle_{validated_id}.srt")
+    abs_srt_path = os.path.abspath(srt_path)
+    abs_output_dir = os.path.abspath(OUTPUT_DIR)
+
+    if not abs_srt_path.startswith(abs_output_dir) or not os.path.isfile(abs_srt_path):
+        raise HTTPException(status_code=404, detail="SRT file not found on disk")
+
+    filename = f"videovoice_{validated_id[:8]}.srt"
+
+    return FileResponse(
+        abs_srt_path,
+        filename=filename,
+        media_type="text/srt",
+    )
+

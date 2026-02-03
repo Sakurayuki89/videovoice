@@ -41,9 +41,9 @@ api.interceptors.response.use(
                     throw new Error(data.detail || `Request failed with status ${status}`);
             }
         } else if (error.request) {
-            throw new Error('Network error. Please check your connection and ensure the backend is running.');
+            throw new Error('네트워크 오류: 서버에 연결할 수 없습니다.');
         } else {
-            throw new Error(error.message || 'An unexpected error occurred');
+            throw new Error(error.message || '알 수 없는 오류가 발생했습니다.');
         }
     }
 );

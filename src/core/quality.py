@@ -27,6 +27,13 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 print(f"[QualityValidator] GEMINI_API_KEY from env: {'SET' if GEMINI_API_KEY else 'NOT SET'}")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
+# Import constants from config (with fallback for standalone usage)
+try:
+    from ..config import QUALITY_EVAL_TIMEOUT, QUALITY_MAX_TEXT_LENGTH
+except ImportError:
+    QUALITY_EVAL_TIMEOUT = 120  # 2 minutes default
+    QUALITY_MAX_TEXT_LENGTH = 10000  # Max chars for quality eval
+
 
 class QualityValidator:
     """Validates translation quality using Gemini API."""
@@ -78,10 +85,9 @@ class QualityValidator:
         if not original_text or not translated_text:
             return self._default_result("Empty text provided")
 
-        # Truncate long texts for API call
-        max_len = 10000
-        original_text = original_text[:max_len]
-        translated_text = translated_text[:max_len]
+        # #8 Fix: Sample long texts (front/middle/end) instead of simple truncation
+        original_text = self._sample_long_text(original_text, QUALITY_MAX_TEXT_LENGTH)
+        translated_text = self._sample_long_text(translated_text, QUALITY_MAX_TEXT_LENGTH)
 
         prompt = self._build_prompt(
             original_text, translated_text, source_lang, target_lang
@@ -96,28 +102,38 @@ class QualityValidator:
 
             # Dual evaluation for reliability — run twice and average
             results = []
+            gemini_quota_error = False
             for i in range(2):
                 try:
-                    response = model.generate_content(prompt, generation_config=gen_config)
+                    response = model.generate_content(
+                        prompt,
+                        generation_config=gen_config,
+                        request_options={"timeout": QUALITY_EVAL_TIMEOUT}
+                    )
                     parsed = self._parse_response(response.text)
                     if parsed.get("error"):
                         continue
                     results.append(parsed)
                 except Exception as e:
+                    error_str = str(e).lower()
+                    # #2 Fix: Detect Gemini quota errors
+                    if "429" in error_str or "resource exhausted" in error_str or "quota" in error_str:
+                        gemini_quota_error = True
+                        print(f"[QualityValidator] Gemini quota exceeded")
+                        break
                     try:
                         print(f"[QualityValidator] Round {i+1} error: {e}")
                     except UnicodeEncodeError:
                         print(f"[QualityValidator] Round {i+1} error (encoding issue)")
                     continue
 
-            if not results:
-                # Fallback: try once more with simpler prompt
-                print("[QualityValidator] Both rounds failed, trying single eval")
-                try:
-                    response = model.generate_content(prompt, generation_config=gen_config)
-                    return self._parse_response(response.text)
-                except Exception as e:
-                    return self._default_result(f"All evaluation rounds failed: {e}")
+            # #2 Fix: Fallback to Groq if Gemini quota exceeded
+            if gemini_quota_error or not results:
+                result = self._fallback_groq_evaluate(prompt)
+                if result and not result.get("error"):
+                    return result
+                if not results:
+                    return self._default_result("All evaluation rounds failed")
 
             if len(results) == 1:
                 return results[0]
@@ -166,6 +182,53 @@ class QualityValidator:
             "issues": all_issues,
             "recommendation": recommendation,
         }
+
+    def _sample_long_text(self, text: str, max_len: int) -> str:
+        """#8 Fix: Sample front/middle/end sections for long texts instead of truncating."""
+        if len(text) <= max_len:
+            return text
+        
+        # Split into 3 equal sections: front, middle, end
+        section_len = max_len // 3
+        front = text[:section_len]
+        middle_start = (len(text) - section_len) // 2
+        middle = text[middle_start:middle_start + section_len]
+        end = text[-section_len:]
+        
+        return f"{front}\n[...중략...]\n{middle}\n[...중략...]\n{end}"
+
+    def _fallback_groq_evaluate(self, prompt: str) -> dict:
+        """#2 Fix: Fallback to Groq API when Gemini quota is exceeded."""
+        from ..config import GROQ_API_KEY
+        if not GROQ_API_KEY:
+            print("[QualityValidator] No GROQ_API_KEY for fallback")
+            return None
+        
+        import requests
+        print("[QualityValidator] Falling back to Groq for quality evaluation...")
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1
+                },
+                timeout=60
+            )
+            if response.status_code != 200:
+                print(f"[QualityValidator] Groq fallback failed: {response.status_code}")
+                return None
+            
+            content = response.json()["choices"][0]["message"]["content"]
+            return self._parse_response(content)
+        except Exception as e:
+            print(f"[QualityValidator] Groq fallback error: {e}")
+            return None
 
     def _build_prompt(
         self,

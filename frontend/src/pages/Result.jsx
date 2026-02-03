@@ -8,16 +8,51 @@ import { mergeVideoWithAudio, downloadBlob, downloadAudio } from '../utils/video
 
 /**
  * 서버 다운로드 엔드포인트를 통해 파일 다운로드 (Content-Disposition 지원)
- * 대용량 파일도 브라우저 메모리 문제 없이 다운로드 가능
+ * #5 Fix: Use fetch with API key header for authenticated environments
  */
-function serverDownload(jobId) {
-    const url = `${API_BASE}/api/jobs/${jobId}/download`;
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = '';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+async function serverDownload(jobId, fileType = 'output') {
+    const endpoint = fileType === 'srt' ? 'srt' : 'download';
+    const url = `${API_BASE}/api/jobs/${jobId}/${endpoint}`;
+
+    // Check if API key is configured
+    const apiKey = import.meta.env.VITE_VIDEOVOICE_API_KEY;
+
+    if (apiKey) {
+        // Authenticated download using fetch
+        try {
+            const response = await fetch(url, {
+                headers: { 'X-API-Key': apiKey }
+            });
+            if (!response.ok) {
+                throw new Error(`Download failed: ${response.status}`);
+            }
+            const blob = await response.blob();
+            const contentDisposition = response.headers.get('Content-Disposition');
+            let filename = `videovoice_${jobId.slice(0, 8)}`;
+            if (contentDisposition) {
+                const match = contentDisposition.match(/filename="?([^"]+)"?/);
+                if (match) filename = match[1];
+            }
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+        } catch (err) {
+            console.error('Authenticated download failed:', err);
+            alert('다운로드 실패: ' + err.message);
+        }
+    } else {
+        // Direct link download (no auth)
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = '';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    }
 }
 
 export default function Result() {
@@ -154,7 +189,12 @@ export default function Result() {
     useEffect(() => {
         if (job && job.output_file && !mergeState.mergedVideoUrl) {
             const url = `${API_BASE}${job.output_file}`;
-            fetch(url)
+            const fetchOpts = {};
+            const apiKey = import.meta.env.VITE_VIDEOVOICE_API_KEY;
+            if (apiKey) {
+                fetchOpts.headers = { 'X-API-Key': apiKey };
+            }
+            fetch(url, fetchOpts)
                 .then(res => {
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     return res.blob();
@@ -269,7 +309,9 @@ export default function Result() {
                         <CheckCircle2 className="w-8 h-8 text-green-400" />
                     </div>
                     <div>
-                        <h1 className="text-3xl font-bold text-white">더빙 완료!</h1>
+                        <h1 className="text-3xl font-bold text-white">
+                            {job.settings?.mode === 'subtitle' ? '자막 처리 완료!' : '더빙 완료!'}
+                        </h1>
                         <p className="text-slate-400">
                             {hasClientMerge
                                 ? `"${originalVideo.name}" 처리가 완료되었습니다.`

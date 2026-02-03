@@ -405,8 +405,6 @@ ollama run qwen3:14b
 
 ---
 
----
-
 ## 15. Backup & Restore Points
 
 ### v1.0-stable (2026-02-01) ⭐ 완성본 백업
@@ -439,6 +437,151 @@ git tag -l
 
 ---
 
-**Last Updated**: 2026-02-01
-**Version**: 2.1 (Gemini Translation + Quality Reliability System)
-**Status**: Production Ready - Stable Backup v1.0
+## 16. Next Plan: 화자 분리(Speaker Diarization) + XTTS 다중 화자 복제
+
+### 16.0 배경 및 동기 (로컬 vs 클라우드 비교)
+완전 로컬 파이프라인(WhisperX + Ollama + XTTS)의 도입을 위한 비용 및 품질 분석입니다.
+
+**비용 비교 (10분 영상 기준)**
+| 항목 | 현재 (클라우드 하이브리드) | 완전 로컬 전용 |
+| :--- | :--- | :--- |
+| **STT** | Groq API (무료 한도) | WhisperX (무료) |
+| **번역** | Gemini (~40원) | Ollama (무료) |
+| **품질검증** | Gemini (~20원) | 없음 (또는 Ollama) |
+| **TTS** | ElevenLabs (유료 한도) | XTTS (무료) |
+| **총 비용** | **약 60원** | **0원** |
+
+**로컬 전용 모드 단점 및 고려사항**
+| 항목 | 영향 및 내용 |
+| :--- | :--- |
+| **번역 품질** | Ollama (Qwen3 14B)는 Gemini 대비 품질이 낮음 (약 80-85% 수준) |
+| **처리 시간** | 10분 영상 기준 약 30~40분 소요 (GPU 풀가동 필요) |
+| **VRAM 관리** | WhisperX와 XTTS 동시 로드 불가 → 순차적 로드/언로드 필수 |
+| **TTS 품질** | XTTS는 ElevenLabs 대비 일본어/한국어 자연스러움이 다소 부족함 |
+| **구현 난이도** | 화자 분리 및 세그먼트별 음성 복제 로직 구현 필요 |
+
+**결론**
+효율성은 극대화되나 품질 타협이 필요합니다. 따라서 **최고 품질(Gemini/ElevenLabs)**과 **완전 무료(WhisperX/XTTS)** 옵션을 사용자가 선택할 수 있도록 하이브리드 구조를 유지하며 화자 분리 기능을 추가합니다.
+
+### 16.1 목표
+영상 내 여러 화자를 자동 분리하여 각 화자의 음색을 개별 복제, 더빙 시 화자별 목소리를 유지하는 기능 구현.
+
+### 16.2 구현 흐름
+```
+1. WhisperX STT + diarization
+   → 텍스트 + 타임스탬프 + 화자 라벨 (SPEAKER_00, SPEAKER_01, ...)
+   ↓
+2. 화자별 음성 샘플 추출
+   → 각 화자의 발화 구간에서 6~15초 참조 음성 추출 (FFmpeg)
+   → static/uploads/{job_id}_speaker_00.wav, _speaker_01.wav ...
+   ↓
+3. 화자별 번역 세그먼트 구성
+   → 화자 라벨 유지하며 청크 단위 번역
+   → [{speaker: "SPEAKER_00", text: "...", start: 0.0, end: 5.2}, ...]
+   ↓
+4. 화자별 XTTS 음성 생성
+   → SPEAKER_00 세그먼트 → XTTS(speaker_wav=speaker_00.wav)
+   → SPEAKER_01 세그먼트 → XTTS(speaker_wav=speaker_01.wav)
+   → VRAM 관리: 화자 전환 시 모델 재로드 불필요 (speaker_wav만 교체)
+   ↓
+5. 타임라인 병합
+   → 각 세그먼트를 원본 타임스탬프에 맞춰 배치
+   → 구간 사이 무음 삽입 (silence padding)
+   → FFmpeg로 최종 오디오 트랙 생성
+   ↓
+6. 비디오 재합성 (기존 merge 로직 재사용)
+```
+
+### 16.3 수정 대상 파일
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/core/stt.py` | WhisperX diarization 옵션 추가 (`diarize=True` 파라미터) |
+| `src/core/pipeline.py` | 화자별 세그먼트 처리 루프, 화자 샘플 추출 로직 |
+| `src/core/tts.py` | 세그먼트 단위 TTS 생성 메서드 추가 |
+| `src/core/ffmpeg.py` | 화자별 음성 샘플 추출, 타임라인 기반 오디오 병합 |
+| `src/web/models.py` | `diarize` 옵션 추가 (JobSettings) |
+| `src/web/routes.py` | `diarize` 폼 파라미터 추가 |
+| `frontend/src/pages/Home.jsx` | 화자 분리 ON/OFF 체크박스 추가 |
+
+### 16.4 기술 요구사항
+- **WhisperX diarization**: `pyannote/speaker-diarization-3.1` 모델 필요
+  - HuggingFace 토큰 필요 (`HF_TOKEN` 환경변수)
+  - 최초 실행 시 모델 다운로드 (~600MB)
+- **VRAM 관리**: WhisperX(~4GB) → 언로드 → XTTS(~4GB) 순차 로드
+  - RTX 3060 12GB로 충분
+- **최적 참조 음성**: 화자당 6~15초 (너무 짧으면 복제 품질 저하)
+  - 발화 구간이 6초 미만인 화자는 여러 구간 연결
+
+### 16.5 제약사항 및 고려사항
+- 화자 수 제한: 2~4명 권장 (5명 이상은 분리 정확도 저하)
+- 화자 분리 정확도: 90%+ (대화 겹침 없는 경우)
+- 겹치는 발화(overlap): 현재 미지원, 긴 쪽 화자에 할당
+- 처리 시간 증가: 10분 영상 기준 +5~10분 (diarization + 화자별 TTS)
+- 완전 무료 로컬 파이프라인과 결합 가능 (WhisperX + Ollama + XTTS = 0원)
+
+### 16.6 구현 우선순위
+1. **Phase 1**: WhisperX diarization 통합 (STT에서 화자 라벨 반환)
+2. **Phase 2**: 화자별 참조 음성 자동 추출
+3. **Phase 3**: 세그먼트 단위 XTTS 생성 + 타임라인 병합
+4. **Phase 4**: UI 옵션 추가 + 테스트
+
+### 16.7 예상 비용 (완전 로컬)
+| 항목 | 비용 |
+|------|------|
+| WhisperX + diarization | 0원 (GPU) |
+| Ollama 번역 | 0원 |
+| XTTS 화자별 복제 | 0원 (GPU) |
+| **합계** | **0원** |
+
+---
+
+## 17. Bug Fixes & Code Quality Improvements (2026-02-03)
+
+### 17.1 수정 완료 목록 (9건)
+
+| # | 우선순위 | 파일 | 수정 내용 |
+|---|----------|------|-----------|
+| 1 | Critical | `pipeline.py` | STT 완료 후 `clear_vram("STT-to-TTS")` 호출하여 GPU 메모리 해제 |
+| 2 | Critical | `quality.py` | Gemini quota 초과 시 Groq API로 자동 fallback (`_fallback_groq_evaluate`) |
+| 3 | Critical | `tts.py` | TTS concat 실패 시 silent fallback 대신 `RuntimeError` 발생 |
+| 4 | Medium | `pipeline.py` | 자막 번역 재시도 시 하드코딩된 `"optimize"` → `job.settings.sync_mode` 사용 |
+| 5 | Medium | `config.py` + `subtitle.py` | `SUBTITLE_BATCH_THRESHOLD` 환경변수 추가 (기본 60%) |
+| 6 | Medium | `stt.py` | Gemini STT JSON 파싱 실패 시 더미 세그먼트 대신 빈 segments 반환 |
+| 7 | Medium | `tts.py` | ElevenLabs 음성 삭제 실패 로깅 (이미 구현됨) |
+| 8 | Low | `quality.py` | 10,000자 초과 텍스트 앞/중/뒤 샘플링 (`_sample_long_text`) |
+| 9 | Low | `translate.py` | Groq 429 에러 명시적 처리 및 안내 메시지 |
+
+### 17.2 새로 추가된 환경변수
+
+```bash
+# 자막 배치 번역 성공률 임계값 (0-100, 기본 60%)
+VIDEOVOICE_SUBTITLE_BATCH_THRESHOLD=60
+```
+
+### 17.3 주요 변경 사항
+
+#### VRAM 관리 개선 (#1)
+```python
+# pipeline.py - STT 완료 후
+from .utils.vram import clear_vram
+clear_vram("STT-to-TTS")
+```
+
+#### 품질 검증 Fallback (#2, #8)
+- Gemini quota 초과 (429) 감지 → Groq API fallback
+- 긴 텍스트 샘플링: 앞 3,333자 + 중간 3,333자 + 뒤 3,333자
+
+#### TTS 안정성 (#3)
+- 청크 concat 실패 시 부분 오디오 사용 금지
+- `RuntimeError` 발생하여 파이프라인에서 명확한 에러 처리
+
+### 17.4 검증 상태
+- ✅ 모든 파일 Python 구문 검증 통과
+- ✅ 서버 `--reload` 자동 리로드 완료
+
+---
+
+**Last Updated**: 2026-02-03
+**Version**: 2.2 (Bug Fixes + Code Quality)
+**Status**: Production Ready - Stable
+**Next**: Speaker Diarization + Multi-voice XTTS (Phase 1~4)

@@ -27,7 +27,7 @@ export const ALLOWED_MIME_TYPES = [
 // Polling Configuration
 export const JOB_POLL_INTERVAL = 2000; // 2 seconds
 export const STATUS_POLL_INTERVAL = 30000; // 30 seconds
-export const MAX_POLL_RETRIES = 3;
+export const MAX_POLL_RETRIES = 30; // Increased for long video processing
 
 // Timeout Configuration
 export const API_TIMEOUT = 30000; // 30 seconds

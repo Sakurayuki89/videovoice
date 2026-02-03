@@ -31,9 +31,23 @@ class TTSModule:
         else:
             self.device = device
 
+    def _generate_single(self, text: str, speaker_wav: str, output_path: str,
+                          language: str = "ko", voice: str = None) -> bool:
+        """Generate TTS for a single chunk. Internal dispatch."""
+        if self.engine == "edge":
+            return asyncio.run(self._generate_edge(text, output_path, language, voice))
+        elif self.engine == "silero":
+            return self._generate_silero(text, output_path, language, voice)
+        elif self.engine == "elevenlabs":
+            return self._generate_elevenlabs(text, speaker_wav, output_path, language)
+        elif self.engine == "openai":
+            return self._generate_openai(text, output_path, language, voice)
+        else:
+            return self._generate_xtts(text, speaker_wav, output_path, language)
+
     def generate(self, text: str, speaker_wav: str, output_path: str,
                  language: str = "ko", voice: str = None) -> bool:
-        """Generate TTS audio. Dispatches to the appropriate engine.
+        """Generate TTS audio. Splits long text into chunks and concatenates.
 
         Args:
             text: Text to synthesize
@@ -45,22 +59,26 @@ class TTSModule:
         Returns:
             True on success
         """
-        if self.engine == "edge":
-            return asyncio.get_event_loop().run_until_complete(
-                self._generate_edge(text, output_path, language, voice)
-            )
-        elif self.engine == "silero":
-            return self._generate_silero(text, output_path, language, voice)
-        elif self.engine == "elevenlabs":
-            return self._generate_elevenlabs(text, speaker_wav, output_path, language)
-        elif self.engine == "openai":
-            return self._generate_openai(text, output_path, language, voice)
-        else:
-            return self._generate_xtts(text, speaker_wav, output_path, language)
+        text = self._validate_text(text)
+        chunks = self._split_text_for_tts(text)
 
-    async def generate_async(self, text: str, speaker_wav: str, output_path: str,
-                             language: str = "ko", voice: str = None) -> bool:
-        """Async version of generate. Preferred when called from async context."""
+        if len(chunks) == 1:
+            return self._generate_single(chunks[0], speaker_wav, output_path, language, voice)
+
+        # Multi-chunk: generate each, then concatenate
+        print(f"TTS: Splitting {len(text)} chars into {len(chunks)} chunks")
+        chunk_paths = []
+        for i, chunk in enumerate(chunks):
+            chunk_path = f"{output_path}.chunk{i}.wav"
+            print(f"TTS: Generating chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
+            self._generate_single(chunk, speaker_wav, chunk_path, language, voice)
+            chunk_paths.append(chunk_path)
+
+        return self._concat_audio_files(chunk_paths, output_path)
+
+    async def _generate_single_async(self, text: str, speaker_wav: str, output_path: str,
+                                      language: str = "ko", voice: str = None) -> bool:
+        """Async single-chunk generation. Internal dispatch."""
         if self.engine == "edge":
             return await self._generate_edge(text, output_path, language, voice)
         elif self.engine == "silero":
@@ -79,6 +97,25 @@ class TTSModule:
             return await asyncio.to_thread(
                 self._generate_xtts, text, speaker_wav, output_path, language
             )
+
+    async def generate_async(self, text: str, speaker_wav: str, output_path: str,
+                             language: str = "ko", voice: str = None) -> bool:
+        """Async version of generate. Splits long text into chunks and concatenates."""
+        text = self._validate_text(text)
+        chunks = self._split_text_for_tts(text)
+
+        if len(chunks) == 1:
+            return await self._generate_single_async(chunks[0], speaker_wav, output_path, language, voice)
+
+        print(f"TTS async: Splitting {len(text)} chars into {len(chunks)} chunks")
+        chunk_paths = []
+        for i, chunk in enumerate(chunks):
+            chunk_path = f"{output_path}.chunk{i}.wav"
+            print(f"TTS async: Generating chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
+            await self._generate_single_async(chunk, speaker_wav, chunk_path, language, voice)
+            chunk_paths.append(chunk_path)
+
+        return await asyncio.to_thread(self._concat_audio_files, chunk_paths, output_path)
 
     # ──────────────────────────── Edge TTS ────────────────────────────
 
@@ -108,7 +145,7 @@ class TTSModule:
         await communicate.save(mp3_path)
 
         if not os.path.isfile(mp3_path) or os.path.getsize(mp3_path) == 0:
-            raise RuntimeError("Edge TTS failed to create output file")
+            raise RuntimeError("Edge TTS가 출력 파일을 생성하지 못했습니다")
 
         # Convert mp3 to wav if needed
         if is_wav:
@@ -119,7 +156,7 @@ class TTSModule:
                     capture_output=True, timeout=60
                 )
                 if result.returncode != 0:
-                    raise RuntimeError(f"FFmpeg conversion failed: {result.stderr.decode()[:200]}")
+                    raise RuntimeError(f"FFmpeg 변환 실패: {result.stderr.decode()[:200]}")
             finally:
                 if os.path.exists(mp3_path):
                     os.remove(mp3_path)
@@ -132,7 +169,10 @@ class TTSModule:
 
     def _generate_silero(self, text: str, output_path: str,
                          language: str, voice: str = None) -> bool:
-        """Silero TTS - lightweight local, specialized for Russian."""
+        """Silero TTS - lightweight local, specialized for Russian.
+
+        Falls back to Edge TTS on failure.
+        """
         text = self._validate_text(text)
         self._validate_output_path(output_path)
 
@@ -141,30 +181,42 @@ class TTSModule:
 
         print(f"Silero TTS: Generating for language '{language}'...")
 
-        model, _ = torch.hub.load(
-            repo_or_dir='snakers4/silero-models',
-            model='silero_tts',
-            language=language,
-            speaker='v4_ru' if language == 'ru' else f'v4_{language}'
-        )
-        model.to(self.device)
+        model = None
+        try:
+            model, _ = torch.hub.load(
+                repo_or_dir='snakers4/silero-models',
+                model='silero_tts',
+                language=language,
+                speaker='v4_ru' if language == 'ru' else f'v4_{language}'
+            )
+            model.to(self.device)
 
-        speaker = voice or ('baya' if language == 'ru' else 'random')
-        audio = model.apply_tts(text=text, speaker=speaker, sample_rate=48000)
+            speaker = voice or ('eugene' if language == 'ru' else 'random')
+            audio = model.apply_tts(text=text, speaker=speaker, sample_rate=48000)
 
-        # Save as WAV
-        import torchaudio
-        torchaudio.save(output_path, audio.unsqueeze(0).cpu(), 48000)
+            # Save as WAV
+            import torchaudio
+            torchaudio.save(output_path, audio.unsqueeze(0).cpu(), 48000)
 
-        if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-            raise RuntimeError("Silero TTS failed to create output file")
+            if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
+                raise RuntimeError("Silero TTS가 출력 파일을 생성하지 못했습니다")
 
-        output_size = os.path.getsize(output_path)
-        print(f"Silero TTS output created: {output_path} ({output_size} bytes)")
+            output_size = os.path.getsize(output_path)
+            print(f"Silero TTS output created: {output_path} ({output_size} bytes)")
+            return True
 
-        del model
-        clear_vram("Silero")
-        return True
+        except Exception as e:
+            print(f"Silero TTS 실패: {e} — Edge TTS로 폴백합니다...")
+            # Fallback to Edge TTS
+            try:
+                return asyncio.run(self._generate_edge(text, output_path, language, voice))
+            except Exception as fallback_err:
+                raise RuntimeError(f"Silero TTS 및 Edge TTS 폴백 모두 실패: {fallback_err}") from e
+
+        finally:
+            if model is not None:
+                del model
+            clear_vram("Silero")
 
     # ──────────────────────────── XTTS v2 ────────────────────────────
 
@@ -191,11 +243,11 @@ class TTSModule:
             )
 
             if not os.path.isfile(output_path):
-                raise RuntimeError("TTS failed to create output file")
+                raise RuntimeError("TTS가 출력 파일을 생성하지 못했습니다")
 
             output_size = os.path.getsize(output_path)
             if output_size == 0:
-                raise RuntimeError("TTS created empty output file")
+                raise RuntimeError("TTS가 빈 출력 파일을 생성했습니다")
 
             print(f"XTTS output created: {output_path} ({output_size} bytes)")
             return True
@@ -204,7 +256,7 @@ class TTSModule:
             raise
         except Exception as e:
             print(f"XTTS Failed: {e}")
-            raise RuntimeError(f"XTTS generation failed: {str(e)}") from e
+            raise RuntimeError(f"XTTS 음성 생성 실패: {str(e)}") from e
         finally:
             if tts is not None:
                 del tts
@@ -217,7 +269,7 @@ class TTSModule:
         """ElevenLabs TTS - high quality with voice cloning support."""
         from ..config import ELEVENLABS_API_KEY, ELEVENLABS_MODEL
         if not ELEVENLABS_API_KEY:
-            raise RuntimeError("ELEVENLABS_API_KEY is not set. Required for ElevenLabs TTS engine.")
+            raise RuntimeError("ELEVENLABS_API_KEY가 설정되지 않았습니다. ElevenLabs TTS 엔진에 필요합니다.")
 
         text = self._validate_text(text)
         self._validate_output_path(output_path)
@@ -264,8 +316,16 @@ class TTSModule:
             for chunk in audio:
                 f.write(chunk)
 
+        # #15 Fix: Delete cloned voice after use to prevent hitting voice limit
+        if speaker_wav and os.path.isfile(speaker_wav) and voice_id != "21m00Tcm4TlvDq8ikWAM":
+            try:
+                client.voices.delete(voice_id)
+                print(f"ElevenLabs TTS: Cleaned up cloned voice {voice_id}")
+            except Exception as cleanup_err:
+                print(f"ElevenLabs TTS: Failed to cleanup voice: {cleanup_err}")
+
         if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-            raise RuntimeError("ElevenLabs TTS failed to create output file")
+            raise RuntimeError("ElevenLabs TTS가 출력 파일을 생성하지 못했습니다")
 
         output_size = os.path.getsize(output_path)
         print(f"ElevenLabs TTS output created: {output_path} ({output_size} bytes)")
@@ -278,7 +338,7 @@ class TTSModule:
         """OpenAI TTS - preset voices, no cloning."""
         from ..config import OPENAI_API_KEY
         if not OPENAI_API_KEY:
-            raise RuntimeError("OPENAI_API_KEY is not set. Required for OpenAI TTS engine.")
+            raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다. OpenAI TTS 엔진에 필요합니다.")
 
         text = self._validate_text(text)
         self._validate_output_path(output_path)
@@ -298,7 +358,7 @@ class TTSModule:
         response.stream_to_file(output_path)
 
         if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-            raise RuntimeError("OpenAI TTS failed to create output file")
+            raise RuntimeError("OpenAI TTS가 출력 파일을 생성하지 못했습니다")
 
         output_size = os.path.getsize(output_path)
         print(f"OpenAI TTS output created: {output_path} ({output_size} bytes)")
@@ -306,15 +366,62 @@ class TTSModule:
 
     # ──────────────────────────── Validation ────────────────────────────
 
+    def _split_text_for_tts(self, text: str) -> list[str]:
+        """Split long text into chunks at sentence boundaries for TTS generation."""
+        import re as _re
+        if len(text) <= MAX_TEXT_LENGTH:
+            return [text]
+
+        chunks = []
+        sentences = _re.split(r'(?<=[.!?。！？\n])\s*', text)
+        current = ""
+        for s in sentences:
+            if current and len(current) + len(s) > MAX_TEXT_LENGTH:
+                chunks.append(current.strip())
+                current = s
+            else:
+                current = f"{current} {s}" if current else s
+        if current.strip():
+            chunks.append(current.strip())
+        return chunks if chunks else [text[:MAX_TEXT_LENGTH]]
+
+    def _concat_audio_files(self, audio_paths: list[str], output_path: str) -> bool:
+        """Concatenate multiple audio files into one using FFmpeg."""
+        import subprocess, tempfile
+        if len(audio_paths) == 1:
+            import shutil
+            shutil.move(audio_paths[0], output_path)
+            return True
+
+        # Create FFmpeg concat list file
+        list_path = output_path + ".concat.txt"
+        try:
+            with open(list_path, "w", encoding="utf-8") as f:
+                for p in audio_paths:
+                    safe = p.replace("'", "'\\''")
+                    f.write(f"file '{safe}'\n")
+
+            cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_path]
+            subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+            return True
+        except Exception as e:
+            # #3 Fix: Raise error instead of silent fallback to prevent truncated audio
+            print(f"Audio concat failed: {e}")
+            raise RuntimeError(f"{len(audio_paths)}개 오디오 청크 병합 실패: {e}")
+        finally:
+            if os.path.isfile(list_path):
+                os.remove(list_path)
+            for p in audio_paths:
+                if os.path.isfile(p):
+                    os.remove(p)
+
     def _validate_text(self, text: str) -> str:
         if not text:
             raise ValueError("Text cannot be empty")
         text = text.strip()
         if not text:
             raise ValueError("Text cannot be empty after stripping whitespace")
-        if len(text) > MAX_TEXT_LENGTH:
-            print(f"WARNING: Text truncated from {len(text)} to {MAX_TEXT_LENGTH} characters")
-            text = text[:MAX_TEXT_LENGTH]
+        # No longer truncate - chunking is handled by generate/generate_async
         return text
 
     def _validate_speaker_wav(self, speaker_wav: str) -> None:

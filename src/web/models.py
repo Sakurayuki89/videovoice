@@ -11,6 +11,11 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class JobMode(str, Enum):
+    DUBBING = "dubbing"
+    SUBTITLE = "subtitle"
+
+
 class SyncMode(str, Enum):
     """Dubbing sync mode for handling audio/video length mismatch."""
     OPTIMIZE = "optimize"      # Translate concisely to fit original duration
@@ -28,6 +33,7 @@ class STTEngine(str, Enum):
     LOCAL = "local"
     GROQ = "groq"
     OPENAI = "openai"
+    GEMINI = "gemini"
 
 
 class TTSEngine(str, Enum):
@@ -48,6 +54,7 @@ class JobSettings(BaseModel):
     translation_engine: TranslationEngine = TranslationEngine.LOCAL
     stt_engine: STTEngine = STTEngine.LOCAL
     tts_engine: TTSEngine = TTSEngine.AUTO
+    mode: JobMode = JobMode.DUBBING
 
 class LogEntry(BaseModel):
     timestamp: datetime
